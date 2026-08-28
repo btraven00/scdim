@@ -481,3 +481,68 @@ resolve 7* — its minimum of ~3 is the documented low-side bias above the
 ceiling, a floor rather than a contradiction. The rise at large r says the
 density is uneven; cross-check it against `betti0` and `fiedler`, and if those
 say connected then it is uneven density, not separated patches.
+
+## Ollivier-Ricci curvature: which cells are the seams?
+
+`betti0` and `fiedler` give global verdicts — "is this one piece?". `ricci-neg`
+gives the local one: *which cells sit on the bottlenecks*. For an edge (x, y),
+put a lazy random-walk measure on each endpoint (mass α at the point,
+(1−α)/k spread over its k neighbours) and compare the cost of moving one to the
+other against the distance between them:
+
+```
+κ(x, y) = 1 − W₁(m_x, m_y) / d(x, y)
+```
+
+Negative κ means the neighbourhoods are harder to align than the endpoints are
+far apart — the edge is a bridge, with little overlap between what it joins.
+Positive κ means heavy overlap, as inside a cluster. Aggregating to nodes, the
+negatively curved cells are branch points of a trajectory, or the thin joins
+between cell types that keep `betti0` and `fiedler` from calling the graph
+partitioned.
+
+**W₁ is solved exactly**, by min-cost flow, not by entropic Sinkhorn. Sinkhorn's
+penalty biases W₁ *upward* and therefore κ *downward* — straight into the
+quantity being counted. Each transport problem is only (k+1)×(k+1), so exactness
+is cheap: 2000 cells at k=15 takes 0.26 s.
+
+The ground metric is Euclidean distance in the embedding, not graph
+shortest-path distance: an all-pairs solve per edge would dominate the cost, and
+the cells already live in a metric space where the ambient distance is better
+behaved than a hop count.
+
+Two implementation notes worth keeping, both learned the hard way:
+
+- The min-cost flow uses **Dijkstra on reduced costs with potentials**, not a
+  label-correcting search on raw costs. Two neighbourhoods that share a point
+  put a zero-cost cycle in the residual graph, and with distances of order
+  10–100 — where f64 spacing is ~1e-14 — no absolute improvement threshold can
+  separate "improved" from "rounded", so Bellman-Ford/SPFA relaxes such a cycle
+  forever. Non-negative reduced costs remove the failure mode rather than tuning
+  around it. The regression test runs the CLI's exact shape at cost scales 1,
+  50 and 1e4.
+- Approximate nearest neighbours are **not** needed here and are not used. Every
+  geometric heuristic in this crate is O(m²) or O(m³) and so is capped at
+  `--twonn-cells` ≈ 2000, where exact k-NN off the Gram matrix is ~4M distance
+  evaluations — far from the bottleneck. See "Scaling past 2000 cells" for what
+  would actually have to change first.
+
+## Progress output
+
+Stages are reported on stderr — not stdout, so `--format json` stays pipeable
+into `jq` with the progress still visible. It redraws in place on a terminal and
+falls back to one plain line per stage otherwise, so logs and CI transcripts do
+not fill with carriage returns. Colour is dropped for a non-terminal and
+whenever `NO_COLOR` is set. `-q` turns it off.
+
+```
+  v reading matrix               0.75s  10000x2000 kept of 10000x27998, 51% dense
+  v biwhitening + eigenspectrum  5.16s  sigma2 0.804, bulk-KS 0.048
+  v tracy-widom test             0.00s  rank 64, embedding 64D
+  v minimum spanning tree        0.02s  1999 edges
+  v laplacian spectrum           0.59s  k-NN k=15
+  v ollivier-ricci curvature     0.26s  2000 cells
+  v correlation integral         0.06s  2000 points
+  v twonn scale analysis         0.01s  6 levels
+  done in 6.86s
+```

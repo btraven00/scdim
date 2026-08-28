@@ -10,5 +10,7 @@ pub mod corrdim;
 pub mod fiedler;
 pub mod io;
 pub mod rank;
+pub mod progress;
+pub mod ricci;
 pub mod tw;
 pub mod twonn;

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use scdim::{betti, corrdim, fiedler, io, rank, twonn};
+use scdim::{betti, corrdim, fiedler, io, progress::Progress, rank, ricci, twonn};
 
 #[derive(Parser)]
 #[command(about = "Estimate the number of signal components in a single-cell matrix")]
@@ -51,6 +51,9 @@ struct Args {
     twonn_reps: usize,
     #[arg(long, value_enum, default_value_t = Format::Txt)]
     format: Format,
+    /// Suppress the stage progress on stderr.
+    #[arg(long, short)]
+    quiet: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -82,25 +85,67 @@ const MIN_MST_GAP: f64 = 2.0;
 /// case that an absolute threshold on lambda_1 would misclassify.
 const MIN_EIGENGAP: f64 = 5.0;
 
+/// Laziness of the Ollivier-Ricci random walk: mass kept at the centre.
+const RICCI_ALPHA: f64 = 0.5;
+
 fn main() -> Result<()> {
     let args = Args::parse();
+    let mut pr = Progress::new(!args.quiet);
+
+    pr.begin("reading matrix");
     let counts = io::load(&args.path, args.n_genes, args.max_cells, args.log)?;
+    pr.ok(
+        "reading matrix",
+        &format!(
+            "{}x{} kept of {}x{}, {:.0}% dense",
+            counts.x.nrows(),
+            counts.x.ncols(),
+            counts.source_shape.0,
+            counts.source_shape.1,
+            100.0 * counts.nnz as f64 / (counts.x.nrows() * counts.x.ncols()) as f64
+        ),
+    );
+
+    pr.begin("biwhitening + eigenspectrum");
     let spec = rank::Spectrum::compute(&counts.x, args.bw_damp, args.bw_max_iter);
+    pr.ok(
+        "biwhitening + eigenspectrum",
+        &format!("sigma2 {:.3}, bulk-KS {:.3}", spec.sigma_sq, spec.bulk_ks),
+    );
     // Geometry runs in the signal subspace, not in ambient gene space: the
     // rank comes from the Tracy-Widom test, so the embedding is chosen by a
     // spectral heuristic rather than by the geometric ones themselves.
+    pr.begin("tracy-widom test");
     let tw = rank::tracy_widom(&spec, args.alpha, args.k_max);
     let embed_k = tw.rank.clamp(2, spec.scores.ncols());
     let embed = spec.scores.as_ref().subcols(0, embed_k).to_owned();
+    pr.ok("tracy-widom test", &format!("rank {}, embedding {embed_k}D", tw.rank));
+
+    pr.begin("minimum spanning tree");
     let mst = betti::mst_weights(&embed, args.twonn_cells);
+    pr.ok("minimum spanning tree", &format!("{} edges", mst.len()));
+
+    pr.begin("laplacian spectrum");
     let lap = fiedler::laplacian_spectrum(&embed, args.twonn_cells, args.knn);
+    pr.ok("laplacian spectrum", &format!("k-NN k={}", args.knn));
+
+    pr.begin("ollivier-ricci curvature");
+    let kappa = ricci::node_curvature(&embed, args.twonn_cells, args.knn, RICCI_ALPHA);
+    pr.ok("ollivier-ricci curvature", &format!("{} cells", kappa.len()));
+
+    pr.begin("correlation integral");
     let (gp, gp_n) = corrdim::correlation_curve(&embed, args.twonn_cells, 20);
+    pr.ok("correlation integral", &format!("{gp_n} points"));
+
+    pr.begin("twonn scale analysis");
     let scale = twonn::scale_analysis(
         &embed,
         args.twonn_cells,
         args.twonn_reps,
         args.twonn_trim,
     );
+    pr.ok("twonn scale analysis", &format!("{} levels", scale.len()));
+    pr.finish();
     let estimates = [
         tw,
         rank::mp_edge(&spec),
@@ -109,6 +154,7 @@ fn main() -> Result<()> {
         corrdim::correlation_dimension(&gp, gp_n, GP_TOL),
         betti::patch_count(&mst, MAX_PATCHES, MIN_MST_GAP),
         fiedler::fiedler(&lap, MAX_PATCHES, MIN_EIGENGAP),
+        ricci::curvature_summary(&kappa),
     ];
 
     match args.format {
@@ -175,7 +221,7 @@ fn main() -> Result<()> {
                 .collect();
             let head = spec.eigenvalues.iter().take(50);
             println!(
-                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"correlation_integral":[{}],"scale_analysis":[{}]}}"#,
+                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}]}}"#,
                 args.path,
                 spec.n,
                 spec.p,
@@ -195,7 +241,8 @@ fn main() -> Result<()> {
                     .map(|e| format!("{e:.8}"))
                     .collect::<Vec<_>>()
                     .join(","),
-                gp.iter()
+                kappa.iter().map(|k| format!("{k:.6}")).collect::<Vec<_>>().join(","),
+                                gp.iter()
                     .map(|p| format!(
                         r#"{{"r":{:.6},"c":{:.8},"slope":{:.6}}}"#,
                         p.r, p.c, if p.slope.is_finite() { p.slope } else { 0.0 }
