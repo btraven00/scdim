@@ -1,0 +1,19 @@
+[package]
+name = "scdim"
+version = "0.1.0"
+edition = "2021"
+description = "Rank-selection diagnostics for single-cell dimensionality reduction"
+license = "GPL-3.0-only"
+
+[dependencies]
+# I/O: streaming h5ad/h5seurat/10x readers.
+scx-core = { path = "../scx/crates/scx-core" }
+# Biwhitening + Marchenko-Pastur theory.
+rmt-spca = { path = "../rmt-spca" }
+faer = { version = "0.19", features = ["rayon"] }
+futures = "0.3"
+rayon = "1"
+# Already in the graph via rmt-spca; used for the TwoNN Gamma confidence interval.
+statrs = "0.18"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
