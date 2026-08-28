@@ -506,10 +506,40 @@ penalty biases W₁ *upward* and therefore κ *downward* — straight into the
 quantity being counted. Each transport problem is only (k+1)×(k+1), so exactness
 is cheap: 2000 cells at k=15 takes 0.26 s.
 
-The ground metric is Euclidean distance in the embedding, not graph
-shortest-path distance: an all-pairs solve per edge would dominate the cost, and
-the cells already live in a metric space where the ambient distance is better
-behaved than a hop count.
+### The ground metric decides the sign
+
+This is the one choice that matters, and getting it wrong is silent. `--ricci-metric`
+exposes all three:
+
+| | flat blob (true κ = 0) | bridge vs interior (bridge must be lower) | Setty 2019, κ < 0 |
+|---|---|---|---|
+| **`geodesic`** (default) | −0.013 ✓ | Δ −0.015 ✓ | **39.0%** |
+| `hops` | −0.018 ✓ | Δ **+0.103** ✗ wrong sign | 44.4% |
+| `euclidean` | **+0.066** ✗ biased | Δ −0.073 ✓ | **0.0%** |
+
+`geodesic` — shortest path through the k-NN graph with Euclidean edge weights —
+is the only one correct on both controls, and is what the literature uses. It
+agrees with straight-line distance for adjacent points (the direct edge *is* the
+shortest path) but grows correctly for points close in the ambient space yet far
+along the manifold, which is exactly the pair a curvature diagnostic must price.
+
+`euclidean` lets mass travel along chords the manifold does not contain, so
+transport cost is systematically understated and κ comes out positive almost
+everywhere: on a branching hematopoiesis trajectory it reported **0 of 1625**
+cells negatively curved, where the geodesic finds 633. `hops` throws away the
+fact that some k-NN edges are far longer than others and ranks a thin filament
+as *more* positively curved than a blob interior.
+
+Two controls with closed-form answers pin the core: K₅ → κ = 3/4, C₈ → κ = 0,
+and two 2-stars joined at their centres → κ = −2/3 on the bridge.
+
+### Reading the number
+
+The bare count of κ < 0 is a weak statistic. Flat space has zero Ricci
+curvature, so in a featureless region roughly half the cells fall either side of
+zero on sampling noise alone — 39% negative is not by itself evidence of
+structure. The 5th percentile is the more honest headline: it says how negative
+the most bridge-like cells actually get. Both are reported.
 
 Two implementation notes worth keeping, both learned the hard way:
 

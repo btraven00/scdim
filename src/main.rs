@@ -51,9 +51,30 @@ struct Args {
     twonn_reps: usize,
     #[arg(long, value_enum, default_value_t = Format::Txt)]
     format: Format,
+    /// Ground metric for Ollivier-Ricci transport. `geodesic` (shortest path
+    /// with Euclidean edge weights) is the right one; the others show why.
+    #[arg(long, value_enum, default_value_t = MetricArg::Geodesic)]
+    ricci_metric: MetricArg,
     /// Suppress the stage progress on stderr.
     #[arg(long, short)]
     quiet: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum MetricArg {
+    Geodesic,
+    Hops,
+    Euclidean,
+}
+
+impl From<MetricArg> for ricci::Metric {
+    fn from(m: MetricArg) -> Self {
+        match m {
+            MetricArg::Geodesic => ricci::Metric::Geodesic,
+            MetricArg::Hops => ricci::Metric::Hops,
+            MetricArg::Euclidean => ricci::Metric::Euclidean,
+        }
+    }
 }
 
 #[derive(Clone, ValueEnum)]
@@ -130,8 +151,11 @@ fn main() -> Result<()> {
     pr.ok("laplacian spectrum", &format!("k-NN k={}", args.knn));
 
     pr.begin("ollivier-ricci curvature");
-    let kappa = ricci::node_curvature(&embed, args.twonn_cells, args.knn, RICCI_ALPHA);
-    pr.ok("ollivier-ricci curvature", &format!("{} cells", kappa.len()));
+    let kappa = ricci::node_curvature(&embed, args.twonn_cells, args.knn, RICCI_ALPHA, args.ricci_metric.into());
+    pr.ok(
+        "ollivier-ricci curvature",
+        &format!("{} cells, {:?} metric", kappa.len(), args.ricci_metric),
+    );
 
     pr.begin("correlation integral");
     let (gp, gp_n) = corrdim::correlation_curve(&embed, args.twonn_cells, 20);

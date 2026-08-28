@@ -39,9 +39,42 @@ use rayon::prelude::*;
 use crate::rank::Estimate;
 use crate::twonn::strided_rows;
 
+/// Ground metric for the transport problem. The choice is not cosmetic: it
+/// changes the sign of the answer, so all three are exposed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Metric {
+    /// Shortest path through the k-NN graph with Euclidean edge weights --
+    /// the discrete geodesic. **The default, and what the literature uses.**
+    ///
+    /// It agrees with `Euclidean` for adjacent points (the direct edge is the
+    /// shortest path) but grows correctly for points that are close in the
+    /// ambient space yet far along the manifold, which is exactly the pair a
+    /// curvature diagnostic has to price properly.
+    Geodesic,
+    /// Unweighted hop count. Every edge is d = 1, so W1 is measured in steps.
+    /// Correct for an abstract graph, but it throws away the fact that some
+    /// k-NN edges are far longer than others, and the degree heterogeneity of
+    /// a symmetrised k-NN graph then drives kappa negative almost everywhere.
+    Hops,
+    /// Straight-line distance in the embedding.
+    ///
+    /// **Wrong for this purpose, and kept only to show why.** It lets mass
+    /// travel through ambient space along chords the manifold does not
+    /// contain, so the transport cost is systematically underestimated and
+    /// kappa comes out positive almost everywhere -- on a branching
+    /// hematopoiesis trajectory it reported 0/4874 negatively curved cells.
+    Euclidean,
+}
+
 /// Per-cell curvature: the mean Ollivier-Ricci curvature of the edges at each
 /// node. `alpha` is the laziness of the random walk (0.5 is the usual choice).
-pub fn node_curvature(x: &Mat<f64>, max_points: usize, k: usize, alpha: f64) -> Vec<f64> {
+pub fn node_curvature(
+    x: &Mat<f64>,
+    max_points: usize,
+    k: usize,
+    alpha: f64,
+    metric: Metric,
+) -> Vec<f64> {
     let rows = strided_rows(x.nrows(), max_points);
     let m = rows.len();
     if m < k + 2 {
@@ -50,40 +83,32 @@ pub fn node_curvature(x: &Mat<f64>, max_points: usize, k: usize, alpha: f64) -> 
     let sub = Mat::from_fn(m, x.ncols(), |i, j| x.read(rows[i], j));
     let gram = sub.as_ref() * sub.as_ref().transpose();
     let diag: Vec<f64> = (0..m).map(|i| gram.read(i, i)).collect();
-    let dist = |a: usize, b: usize| (diag[a] + diag[b] - 2.0 * gram.read(a, b)).max(0.0).sqrt();
+    let euclid = |a: usize, b: usize| (diag[a] + diag[b] - 2.0 * gram.read(a, b)).max(0.0).sqrt();
 
-    let mut nbr: Vec<Vec<usize>> = Vec::with_capacity(m);
+    let mut knn: Vec<Vec<usize>> = Vec::with_capacity(m);
     let mut buf: Vec<(f64, usize)> = Vec::with_capacity(m);
     for i in 0..m {
         buf.clear();
-        buf.extend((0..m).filter(|&j| j != i).map(|j| (dist(i, j), j)));
+        buf.extend((0..m).filter(|&j| j != i).map(|j| (euclid(i, j), j)));
         buf.select_nth_unstable_by(k - 1, |a, b| a.0.total_cmp(&b.0));
-        nbr.push(buf[..k].iter().map(|&(_, j)| j).collect());
+        knn.push(buf[..k].iter().map(|&(_, j)| j).collect());
     }
+    // The measure has to live on the *symmetrised* neighbourhood: k-NN is
+    // directed, and a hub picked by many points but picking few has a much
+    // larger true degree than k.
+    let adj = symmetrise(&knn);
 
-    // Edge set of the symmetrised graph, each edge once.
-    let edges: Vec<(usize, usize)> = (0..m)
-        .flat_map(|i| nbr[i].iter().map(move |&j| (i.min(j), i.max(j))))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-
-    let kappas: Vec<f64> = edges
-        .par_iter()
-        .map(|&(a, b)| {
-            let d = dist(a, b);
-            if d <= 0.0 {
-                return 0.0;
-            }
-            let (sa, pa) = measure(a, &nbr[a], alpha);
-            let (sb, pb) = measure(b, &nbr[b], alpha);
-            let cost: Vec<Vec<f64>> = pa
-                .iter()
-                .map(|&u| pb.iter().map(|&v| dist(u, v)).collect())
-                .collect();
-            1.0 - wasserstein1(&sa, &sb, &cost) / d
-        })
-        .collect();
+    let (edges, kappas) = match metric {
+        Metric::Euclidean => curvature_edges(&adj, &euclid, alpha),
+        Metric::Hops => {
+            let hops = hop_distances(&adj);
+            curvature_edges(&adj, &|a, b| hops[a][b] as f64, alpha)
+        }
+        Metric::Geodesic => {
+            let geo = geodesic_distances(&adj, &euclid);
+            curvature_edges(&adj, &|a, b| geo[a][b] as f64, alpha)
+        }
+    };
 
     let mut sum = vec![0.0f64; m];
     let mut cnt = vec![0u32; m];
@@ -96,6 +121,137 @@ pub fn node_curvature(x: &Mat<f64>, max_points: usize, k: usize, alpha: f64) -> 
     (0..m)
         .map(|i| if cnt[i] > 0 { sum[i] / cnt[i] as f64 } else { 0.0 })
         .collect()
+}
+
+/// Undirected neighbour lists from directed k-NN lists.
+pub fn symmetrise(knn: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut adj: Vec<std::collections::BTreeSet<usize>> = vec![Default::default(); knn.len()];
+    for (i, nn) in knn.iter().enumerate() {
+        for &j in nn {
+            adj[i].insert(j);
+            adj[j].insert(i);
+        }
+    }
+    adj.into_iter().map(|s| s.into_iter().collect()).collect()
+}
+
+/// All-pairs hop distance by BFS from every node.
+///
+/// Disconnected pairs get a large finite value rather than infinity: the
+/// transport problem needs a finite cost matrix, and a component boundary is
+/// exactly where curvature should be most negative, not undefined.
+pub fn hop_distances(adj: &[Vec<usize>]) -> Vec<Vec<u16>> {
+    let n = adj.len();
+    let far = (n as u16).saturating_add(1);
+    (0..n)
+        .into_par_iter()
+        .map(|s| {
+            let mut d = vec![far; n];
+            d[s] = 0;
+            let mut q = std::collections::VecDeque::from([s]);
+            while let Some(u) = q.pop_front() {
+                for &v in &adj[u] {
+                    if d[v] == far {
+                        d[v] = d[u] + 1;
+                        q.push_back(v);
+                    }
+                }
+            }
+            d
+        })
+        .collect()
+}
+
+/// All-pairs shortest-path distance through `adj` with Euclidean edge weights:
+/// the discrete geodesic on the k-NN graph.
+///
+/// Dijkstra from every node, in f32 -- at these sizes the matrix is the memory
+/// cost (m^2 floats), and curvature does not need f64 in the ground metric.
+/// Unreachable pairs get the largest finite distance seen, so a component
+/// boundary prices as very expensive rather than undefined.
+pub fn geodesic_distances(
+    adj: &[Vec<usize>],
+    w: &(dyn Fn(usize, usize) -> f64 + Sync),
+) -> Vec<Vec<f32>> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let n = adj.len();
+    let mut out: Vec<Vec<f32>> = (0..n)
+        .into_par_iter()
+        .map(|s| {
+            let mut d = vec![f32::INFINITY; n];
+            d[s] = 0.0;
+            let mut heap = BinaryHeap::new();
+            heap.push((Reverse(ordered_float(0.0)), s));
+            while let Some((Reverse(du), u)) = heap.pop() {
+                let du = f32::from_bits(du ^ 0x8000_0000);
+                if du > d[u] {
+                    continue;
+                }
+                for &v in &adj[u] {
+                    let nd = du + w(u, v) as f32;
+                    if nd < d[v] {
+                        d[v] = nd;
+                        heap.push((Reverse(ordered_float(nd)), v));
+                    }
+                }
+            }
+            d
+        })
+        .collect();
+    // Finite stand-in for disconnected pairs.
+    let far = out
+        .iter()
+        .flat_map(|r| r.iter())
+        .copied()
+        .filter(|v| v.is_finite())
+        .fold(0.0f32, f32::max)
+        * 4.0;
+    for row in &mut out {
+        for v in row.iter_mut() {
+            if !v.is_finite() {
+                *v = far.max(1.0);
+            }
+        }
+    }
+    out
+}
+
+/// Order-preserving bit pattern for non-negative f32, so it can go in a
+/// `BinaryHeap` without pulling in an ordered-float dependency.
+fn ordered_float(x: f32) -> u32 {
+    x.to_bits() ^ 0x8000_0000
+}
+
+/// Ollivier-Ricci curvature of every undirected edge of `adj` under `dist`.
+///
+/// Split out from the point cloud so it can be checked against graphs whose
+/// curvature is known in closed form -- see the tests.
+pub fn curvature_edges(
+    adj: &[Vec<usize>],
+    dist: &(dyn Fn(usize, usize) -> f64 + Sync),
+    alpha: f64,
+) -> (Vec<(usize, usize)>, Vec<f64>) {
+    let edges: Vec<(usize, usize)> = (0..adj.len())
+        .flat_map(|i| adj[i].iter().filter(move |&&j| j > i).map(move |&j| (i, j)))
+        .collect();
+    let kappas = edges
+        .par_iter()
+        .map(|&(a, b)| {
+            let d = dist(a, b);
+            if d <= 0.0 {
+                return 0.0;
+            }
+            let (sa, pa) = measure(a, &adj[a], alpha);
+            let (sb, pb) = measure(b, &adj[b], alpha);
+            let cost: Vec<Vec<f64>> = pa
+                .iter()
+                .map(|&u| pb.iter().map(|&v| dist(u, v)).collect())
+                .collect();
+            1.0 - wasserstein1(&sa, &sb, &cost) / d
+        })
+        .collect();
+    (edges, kappas)
 }
 
 /// Lazy random-walk measure at `i`: `(masses, support)`.
@@ -209,7 +365,13 @@ pub fn wasserstein1(supply: &[f64], demand: &[f64], cost: &[Vec<f64>]) -> f64 {
     total
 }
 
-/// How many cells sit on a bottleneck.
+/// How many cells sit on a bottleneck, and how deep the bottlenecks go.
+///
+/// The bare count of `kappa < 0` is a weak statistic on its own: flat space has
+/// zero Ricci curvature, so in a featureless region roughly half the cells fall
+/// either side of zero on sampling noise alone. The 5th percentile is the more
+/// honest headline -- it says how negative the *most* bridge-like cells get --
+/// so both are reported.
 pub fn curvature_summary(kappa: &[f64]) -> Estimate {
     if kappa.is_empty() {
         return Estimate {
@@ -224,16 +386,18 @@ pub fn curvature_summary(kappa: &[f64]) -> Estimate {
     let mean = kappa.iter().sum::<f64>() / n as f64;
     let mut sorted = kappa.to_vec();
     sorted.sort_by(f64::total_cmp);
+    let pct = |q: f64| sorted[((q * n as f64) as usize).min(n - 1)];
     Estimate {
         name: "ricci-neg",
         rank: neg,
         detail: format!(
-            "{neg}/{n} cells ({:.1}%) negatively curved; mean kappa {mean:+.3}, \
-             range {:+.3} to {:+.3}, median {:+.3}",
+            "{neg}/{n} cells ({:.1}%) kappa < 0; mean {mean:+.3}, p5 {:+.3}, median {:+.3}, \
+             p95 {:+.3}, min {:+.3}",
             100.0 * neg as f64 / n as f64,
+            pct(0.05),
+            pct(0.50),
+            pct(0.95),
             sorted[0],
-            sorted[n - 1],
-            sorted[n / 2]
         ),
         pvalues: Vec::new(),
     }
@@ -286,6 +450,51 @@ mod tests {
         }
     }
 
+    /// Curvature of a graph whose value can be derived by hand, with hop
+    /// distance and no laziness. Three cases, one of each sign.
+    #[test]
+    fn matches_closed_form_graph_curvature() {
+        let kappa = |adj: &Vec<Vec<usize>>| {
+            let hops = hop_distances(adj);
+            let (e, k) = curvature_edges(adj, &|a, b| hops[a][b] as f64, 0.0);
+            (e, k)
+        };
+
+        // K_5: m_x and m_y differ only by 1/(n-1) sitting on each other, one
+        // hop apart, so W1 = 1/4 and kappa = 3/4 on every edge.
+        let k5: Vec<Vec<usize>> = (0..5)
+            .map(|i| (0..5).filter(|&j| j != i).collect())
+            .collect();
+        for v in kappa(&k5).1 {
+            assert!((v - 0.75).abs() < 1e-9, "K_5 edge kappa {v}, expected 0.75");
+        }
+
+        // Cycle C_8: shift both neighbours one step, W1 = 1 = d, so kappa = 0.
+        let c8: Vec<Vec<usize>> = (0..8usize).map(|i| vec![(i + 7) % 8, (i + 1) % 8]).collect();
+        for v in kappa(&c8).1 {
+            assert!(v.abs() < 1e-9, "C_8 edge kappa {v}, expected 0");
+        }
+
+        // Two 2-stars joined at their centres 0-1. The bridge must be
+        // negative: one leaf pair is 3 hops apart, giving W1 = 5/3 against
+        // d = 1, so kappa = -2/3.
+        let stars: Vec<Vec<usize>> = vec![
+            vec![1, 2, 3],
+            vec![0, 4, 5],
+            vec![0],
+            vec![0],
+            vec![1],
+            vec![1],
+        ];
+        let (edges, ks) = kappa(&stars);
+        let bridge = edges.iter().position(|&e| e == (0, 1)).unwrap();
+        assert!(
+            (ks[bridge] + 2.0 / 3.0).abs() < 1e-9,
+            "bridge kappa {}, expected -2/3",
+            ks[bridge]
+        );
+    }
+
     fn lcg(seed: u64) -> impl FnMut() -> f64 {
         let mut s = seed;
         move || {
@@ -294,20 +503,32 @@ mod tests {
         }
     }
 
-    /// A dense isotropic blob is clique-like everywhere: neighbourhoods overlap
-    /// heavily, so curvature is positive and almost nothing is a bottleneck.
+    /// A uniform cloud samples *flat* space, whose Ricci curvature is zero.
+    /// The geodesic metric must return ~0; the Euclidean one is biased
+    /// positive, which is the whole reason it is not the default.
     #[test]
-    fn blob_is_positively_curved() {
+    fn flat_space_has_zero_curvature() {
         let mut r = lcg(4);
         let x = Mat::from_fn(400, 4, |_, _| r() + r() + r());
-        let k = node_curvature(&x, 400, 12, 0.5);
-        let neg = k.iter().filter(|&&v| v < 0.0).count();
-        assert!(neg * 10 < k.len(), "{neg}/{} negatively curved", k.len());
+        let mean = |mt| {
+            let k = node_curvature(&x, 400, 12, 0.5, mt);
+            k.iter().sum::<f64>() / k.len() as f64
+        };
+        let geo = mean(Metric::Geodesic);
+        assert!(geo.abs() < 0.05, "flat space gave mean kappa {geo:+.4}");
+        // Documented bias: straight-line distance lets mass cut through
+        // ambient space, understating transport cost and inflating kappa.
+        assert!(
+            mean(Metric::Euclidean) > geo + 0.05,
+            "expected the Euclidean metric to read positive on flat space"
+        );
     }
 
     /// The case the diagnostic exists for: two blobs joined by a thin bridge.
-    /// The bridge cells must be the negatively curved ones, and they must be
-    /// more negative than the blob interiors.
+    /// The bridge cells must be negatively curved and clearly below the blob
+    /// interiors. Hop distance gets this *backwards* -- it prices a filament
+    /// as cheap because every step counts as 1 -- which is why the default is
+    /// the geodesic and not the hop count.
     #[test]
     fn bridge_cells_are_negatively_curved() {
         let mut r = lcg(9);
@@ -324,13 +545,21 @@ mod tests {
                 if j == 0 { 1.0 + 28.0 * t } else { 0.5 + 0.02 * r() }
             }
         });
-        let k = node_curvature(&x, n, 10, 0.5);
+        let k = node_curvature(&x, n, 10, 0.5, Metric::Geodesic);
         let bridge: f64 = k[2 * blob..].iter().sum::<f64>() / span as f64;
         let inside: f64 = k[..blob].iter().sum::<f64>() / blob as f64;
         assert!(bridge < 0.0, "bridge mean kappa {bridge:+.3} not negative");
         assert!(
-            bridge < inside - 0.1,
-            "bridge {bridge:+.3} not clearly below blob interior {inside:+.3}"
+            bridge < inside,
+            "bridge {bridge:+.3} not below blob interior {inside:+.3}"
+        );
+
+        let hop = node_curvature(&x, n, 10, 0.5, Metric::Hops);
+        let hop_bridge: f64 = hop[2 * blob..].iter().sum::<f64>() / span as f64;
+        let hop_inside: f64 = hop[..blob].iter().sum::<f64>() / blob as f64;
+        assert!(
+            hop_bridge > hop_inside,
+            "hop metric was expected to misrank the bridge ({hop_bridge:+.3} vs {hop_inside:+.3})"
         );
     }
 }
