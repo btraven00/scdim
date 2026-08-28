@@ -55,6 +55,12 @@ struct Args {
     /// with Euclidean edge weights) is the right one; the others show why.
     #[arg(long, value_enum, default_value_t = MetricArg::Geodesic)]
     ricci_metric: MetricArg,
+    /// Robust-z cut defining "extreme" curvature, in Iglewicz-Hoaglin units of
+    /// the data's own kappa distribution. Scale-free: independent of k, alpha
+    /// and local density, so it transfers across datasets. 3.5 is the usual
+    /// outlier threshold; lower it to widen the net.
+    #[arg(long, default_value_t = 3.5)]
+    ricci_cut: f64,
     /// Suppress the stage progress on stderr.
     #[arg(long, short)]
     quiet: bool,
@@ -178,7 +184,7 @@ fn main() -> Result<()> {
         corrdim::correlation_dimension(&gp, gp_n, GP_TOL),
         betti::patch_count(&mst, MAX_PATCHES, MIN_MST_GAP),
         fiedler::fiedler(&lap, MAX_PATCHES, MIN_EIGENGAP),
-        ricci::curvature_summary(&kappa),
+        ricci::curvature_summary(&kappa, args.ricci_cut),
     ];
 
     match args.format {

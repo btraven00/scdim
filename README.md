@@ -533,13 +533,39 @@ as *more* positively curved than a blob interior.
 Two controls with closed-form answers pin the core: K₅ → κ = 3/4, C₈ → κ = 0,
 and two 2-stars joined at their centres → κ = −2/3 on the bridge.
 
-### Reading the number
+### Reading the number: `--ricci-cut`
 
-The bare count of κ < 0 is a weak statistic. Flat space has zero Ricci
-curvature, so in a featureless region roughly half the cells fall either side of
-zero on sampling noise alone — 39% negative is not by itself evidence of
-structure. The 5th percentile is the more honest headline: it says how negative
-the most bridge-like cells actually get. Both are reported.
+Counting κ < 0 is close to meaningless. Flat space has zero Ricci curvature, so
+in a featureless region the distribution straddles zero and about half the cells
+land negative on sampling noise alone. An absolute threshold does not help
+either — the spread of κ depends on `k`, on `alpha` and on local density, so a
+cut that isolates the tail on one dataset sits in the bulk of the next.
+
+`--ricci-cut` is therefore in **robust z units of the data's own curvature
+distribution** (Iglewicz-Hoaglin): z = 0.6745(κ − median)/MAD. Being a ratio of
+two quantities in the same units it carries none of its own, so it transfers
+across datasets, k and alpha. 3.5 is the conventional outlier threshold.
+
+The count is paired with the **tail asymmetry** — cells below −cut against cells
+above +cut — which needs no distributional assumption. Symmetric noise about a
+flat mean gives ~1; genuine bottlenecks put mass in the left tail with nothing
+matching on the right, so the ratio climbs.
+
+This is what the sign test was hiding:
+
+| dataset | κ < 0 | beyond −3.5z | beyond +3.5z | asymmetry |
+|---|---|---|---|---|
+| Setty 2019 (trajectory) | 39% | 0 | 8 | 0.00 |
+| tm-droplet-trachea (K=5) | 56% | 0 | 9 | 0.00 |
+| pbmc (K=31) | 50% | 0 | 17 | 0.00 |
+| **tm-facs (K=81)** | **17%** | **6** | **0** | **6.00** |
+
+The κ < 0 fraction is *anti-correlated* with the extreme count. Setty is 39%
+negative with zero extremes; tm-facs is only 17% negative but is the sole
+dataset with a genuine left tail. The sign test was reporting where the median
+sits, not whether there is structure — which is the whole reason for the knob.
+Biologically it reads correctly too: an atlas of 81 distinct types has real
+seams between them, while a hematopoiesis continuum has none.
 
 Two implementation notes worth keeping, both learned the hard way:
 

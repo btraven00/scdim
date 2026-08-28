@@ -367,13 +367,34 @@ pub fn wasserstein1(supply: &[f64], demand: &[f64], cost: &[Vec<f64>]) -> f64 {
 
 /// How many cells sit on a bottleneck, and how deep the bottlenecks go.
 ///
-/// The bare count of `kappa < 0` is a weak statistic on its own: flat space has
-/// zero Ricci curvature, so in a featureless region roughly half the cells fall
-/// either side of zero on sampling noise alone. The 5th percentile is the more
-/// honest headline -- it says how negative the *most* bridge-like cells get --
-/// so both are reported.
-pub fn curvature_summary(kappa: &[f64]) -> Estimate {
-    if kappa.is_empty() {
+/// # Why the sign test is not enough, and what replaces it
+///
+/// Counting `kappa < 0` is close to meaningless on its own. Flat space has zero
+/// Ricci curvature, so in a featureless region the curvature distribution
+/// straddles zero and roughly half the cells land negative on sampling noise
+/// alone -- 39% negative is not evidence of anything. Nor does an absolute
+/// threshold help: the spread of kappa depends on `k`, on the laziness `alpha`,
+/// and on the local density, so a cut that isolates the tail on one dataset
+/// sits in the bulk of the next.
+///
+/// `cut` is therefore in **robust z units** of the data's own curvature
+/// distribution (Iglewicz-Hoaglin):
+///
+///   z_i = 0.6745 (kappa_i - median) / MAD
+///
+/// The 0.6745 makes MAD a consistent estimate of sigma for Gaussian data, so
+/// `cut = 3.5` means the conventional outlier threshold whatever the scale.
+/// Being a ratio of two quantities in the same units, it carries no units of
+/// its own and transfers across datasets, k, and alpha.
+///
+/// The count alone would still be hard to read, so the summary also reports the
+/// **tail asymmetry**: the number of cells below `-cut` against the number
+/// above `+cut`. This needs no distributional assumption at all. Symmetric
+/// noise around a flat mean gives asymmetry ~1; genuine bottlenecks put mass in
+/// the left tail and nothing matching on the right, so asymmetry climbs. That
+/// ratio, not the raw fraction, is the thing to read.
+pub fn curvature_summary(kappa: &[f64], cut: f64) -> Estimate {
+    if kappa.len() < 8 {
         return Estimate {
             name: "ricci-neg",
             rank: 0,
@@ -382,22 +403,38 @@ pub fn curvature_summary(kappa: &[f64]) -> Estimate {
         };
     }
     let n = kappa.len();
-    let neg = kappa.iter().filter(|&&k| k < 0.0).count();
-    let mean = kappa.iter().sum::<f64>() / n as f64;
     let mut sorted = kappa.to_vec();
     sorted.sort_by(f64::total_cmp);
     let pct = |q: f64| sorted[((q * n as f64) as usize).min(n - 1)];
+    let median = pct(0.5);
+
+    let mut dev: Vec<f64> = kappa.iter().map(|k| (k - median).abs()).collect();
+    dev.sort_by(f64::total_cmp);
+    let mad = dev[n / 2];
+    if mad <= 0.0 {
+        return Estimate {
+            name: "ricci-neg",
+            rank: 0,
+            detail: format!("degenerate: every cell has kappa = {median:+.3}"),
+            pvalues: Vec::new(),
+        };
+    }
+
+    let z = |k: f64| 0.6745 * (k - median) / mad;
+    let low = kappa.iter().filter(|&&k| z(k) < -cut).count();
+    let high = kappa.iter().filter(|&&k| z(k) > cut).count();
+    let neg = kappa.iter().filter(|&&k| k < 0.0).count();
+    let asym = low as f64 / high.max(1) as f64;
+
     Estimate {
         name: "ricci-neg",
-        rank: neg,
+        rank: low,
         detail: format!(
-            "{neg}/{n} cells ({:.1}%) kappa < 0; mean {mean:+.3}, p5 {:+.3}, median {:+.3}, \
-             p95 {:+.3}, min {:+.3}",
-            100.0 * neg as f64 / n as f64,
-            pct(0.05),
-            pct(0.50),
-            pct(0.95),
+            "{low}/{n} cells beyond -{cut} robust-z ({high} beyond +{cut}, tail asymmetry \
+             {asym:.2}x); kappa median {median:+.3}, MAD {mad:.3}, min {:+.3}; \
+             {:.0}% have kappa < 0",
             sorted[0],
+            100.0 * neg as f64 / n as f64,
         ),
         pvalues: Vec::new(),
     }
@@ -501,6 +538,47 @@ mod tests {
             s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             (s >> 11) as f64 / (1u64 << 53) as f64
         }
+    }
+
+    /// The scale-free cut has to be symmetric on flat space and left-heavy on
+    /// a bottleneck. That asymmetry, not the raw fraction below zero, is what
+    /// makes the count mean something.
+    #[test]
+    fn tail_asymmetry_separates_flat_from_bottleneck() {
+        let asym = |e: &Estimate| {
+            let s = e.detail.split("asymmetry ").nth(1).unwrap();
+            s[..s.find('x').unwrap()].trim().parse::<f64>().unwrap()
+        };
+
+        let mut r = lcg(4);
+        let flat = Mat::from_fn(600, 4, |_, _| r() + r() + r());
+        let flat_k = node_curvature(&flat, 600, 12, 0.5, Metric::Geodesic);
+        let flat_s = curvature_summary(&flat_k, 3.5);
+
+        let mut r = lcg(9);
+        let (b, span) = (250usize, 40usize);
+        let n = 2 * b + span;
+        let bridged = Mat::from_fn(n, 3, |i, j| {
+            if i < 2 * b {
+                let c = if i < b { 0.0 } else { 30.0 };
+                if j == 0 { c + r() } else { r() }
+            } else {
+                let t = (i - 2 * b) as f64 / span as f64;
+                if j == 0 { 1.0 + 28.0 * t } else { 0.5 + 0.02 * r() }
+            }
+        });
+        let br_k = node_curvature(&bridged, n, 10, 0.5, Metric::Geodesic);
+        let br_s = curvature_summary(&br_k, 3.5);
+
+        assert!(
+            asym(&br_s) > asym(&flat_s),
+            "bottleneck tail ({}) should outweigh flat tail ({})",
+            br_s.detail,
+            flat_s.detail
+        );
+        // The knob is scale-free: loosening it can only admit more cells.
+        let loose = curvature_summary(&br_k, 2.0);
+        assert!(loose.rank >= br_s.rank, "looser cut returned fewer cells");
     }
 
     /// A uniform cloud samples *flat* space, whose Ricci curvature is zero.
