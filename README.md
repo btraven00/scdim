@@ -402,3 +402,82 @@ than rmt-spca's 1000. The residual plateaus by ~125 on every dataset tried and
 rmt-spca's stall detector then burns 100 more iterations of patience; capping
 gives bit-identical output (KS, σ² and every rank match to 4 decimals) for a
 third less wall clock.
+
+## Fiedler value and the eigengap
+
+`fiedler` builds a k-NN graph on the embedding with self-tuning affinities
+(Zelnik-Manor & Perona: local scale σᵢ = distance to the k-th neighbour, so a
+dense cell type and a sparse one are not forced to share a bandwidth), takes the
+normalised Laplacian L = I − D^−½ W D^−½, and reads its bottom spectrum. No
+sparse eigensolver: at these point counts the dense Laplacian is the same size
+as the covariance EVD already being run, and a dense symmetric EVD returns the
+whole bottom spectrum, so the eigengap comes free next to λ₁ rather than costing
+an ARPACK call per extra eigenvalue.
+
+**λ₁ alone is not a classifier, and it fails on exactly the interesting case.**
+A path graph on N nodes has algebraic connectivity ~(π/N)² while being perfectly
+connected: measured here, 800 points along a smooth 1-D curve give λ₁ = 1.4e-4,
+which any absolute threshold reads as "partitioned". A trajectory is a long thin
+manifold, so it will *always* look weakly connected in absolute terms. The
+verdict therefore rests on two things without that failure mode:
+
+- **Exact zeros.** The multiplicity of eigenvalue 0 is the number of connected
+  components, exactly, with nothing to tune.
+- **The relative eigengap** λ_{k+1}/λ_k. For k separated clusters the ratio at k
+  is enormous (the denominator is ~0); for a path graph λ_k ~ (kπ/N)², so
+  consecutive ratios are 4, 2.25, 1.78, … — bounded and shrinking. The default
+  threshold of 5 clears a path graph's maximum of 4.
+
+λ₁ is still reported — as algebraic connectivity it genuinely measures how thin
+the bottleneck is. It just is not, on its own, a verdict.
+
+Measured, same three datasets: trachea λ₁ = 5.1e-3 / gap 1.90×, tm-facs
+2.5e-3 / 1.64×, pbmc 1.5e-3 / 4.32×. All connected, and pbmc is again the most
+patchy — the same ordering β₀ gives from a completely different construction.
+
+## How to read the tables
+
+**Correlation integral.** The `slope` column is the local dimension estimate at
+each radius; only its shape matters, not any single row. A clean fractal gives a
+long flat stretch. Real data usually gives three regimes:
+
+- *Small r, high slope, falling.* The noise floor. Noise is full-rank, so the
+  finest neighbourhoods look high-dimensional.
+- *A middle minimum or plateau.* The manifold, if there is one.
+- *Large r, slope rising again.* **Not** saturation — saturation drives the
+  slope to zero as C → 1. A rise means that past the within-cluster diameter you
+  start swallowing whole neighbouring clusters at once, so C(r) grows faster
+  than any power law. It is the signature of inhomogeneous density or clustered
+  structure, and it means the set is not self-similar: there is no single
+  intrinsic dimension to report.
+
+Always read the slope against the ceiling in the `corr-dim` row. Anything at or
+above 2 log₁₀ N is unresolvable, so a "plateau" up there is an artefact and the
+lower minimum is the measurable number.
+
+**TwoNN scale analysis.** `d` should fall as N shrinks (noise dropping away) and
+then flatten. The flat part is the answer; check `<r2>` actually moved, because
+the scale probed goes as N^(−1/d) and a large d leaves almost no leverage. A
+32× decimation moving ⟨r₂⟩ by 1.8× is real scale variation; by 6% is not.
+Watch `spread` too — it widens at small N, and a plateau resting only on the
+last, noisiest level is not a plateau.
+
+Worked example, N = 1866:
+
+```
+    1866   13.966   13.26        1866 points -> ceiling 2*log10(N) = 6.5
+     933   15.176   10.54
+     466   17.122    8.23
+     233   19.488    6.88   <- flat
+     116   22.330    6.80   <- flat
+      58   25.231    7.20   <- flat  =>  twonn-plateau d ~ 7
+```
+
+with a correlation integral whose slope falls 9.9 → 2.95 (at r ≈ 19) and then
+rises back to 6.4. Read together: TwoNN plateaus at **d ≈ 7**, and ⟨r₂⟩ grew
+1.8× over a 32× decimation, which is what d ≈ 7 predicts (32^{1/7} = 1.63), so
+the lever worked and the plateau is real. GP's ceiling is 6.5, i.e. it *cannot
+resolve 7* — its minimum of ~3 is the documented low-side bias above the
+ceiling, a floor rather than a contradiction. The rise at large r says the
+density is uneven; cross-check it against `betti0` and `fiedler`, and if those
+say connected then it is uneven density, not separated patches.

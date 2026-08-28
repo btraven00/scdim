@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use scdim::{betti, corrdim, io, rank, twonn};
+use scdim::{betti, corrdim, fiedler, io, rank, twonn};
 
 #[derive(Parser)]
 #[command(about = "Estimate the number of signal components in a single-cell matrix")]
@@ -43,6 +43,9 @@ struct Args {
     /// Near-duplicate cells produce huge ratios; this is what removes them.
     #[arg(long, default_value_t = 0.01)]
     twonn_trim: f64,
+    /// Neighbours per cell in the Laplacian k-NN graph.
+    #[arg(long, default_value_t = 15)]
+    knn: usize,
     /// Random subsamples per decimation level in the TwoNN scale analysis.
     #[arg(long, default_value_t = 3)]
     twonn_reps: usize,
@@ -74,6 +77,11 @@ const GP_TOL: f64 = 0.15;
 const MAX_PATCHES: usize = 40;
 const MIN_MST_GAP: f64 = 2.0;
 
+/// Relative eigengap `lambda_k+1 / lambda_k` needed to call the graph split.
+/// A path graph tops out around 4 (`(k+1)^2/k^2`), so 5 clears the connected
+/// case that an absolute threshold on lambda_1 would misclassify.
+const MIN_EIGENGAP: f64 = 5.0;
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let counts = io::load(&args.path, args.n_genes, args.max_cells, args.log)?;
@@ -85,6 +93,7 @@ fn main() -> Result<()> {
     let embed_k = tw.rank.clamp(2, spec.scores.ncols());
     let embed = spec.scores.as_ref().subcols(0, embed_k).to_owned();
     let mst = betti::mst_weights(&embed, args.twonn_cells);
+    let lap = fiedler::laplacian_spectrum(&embed, args.twonn_cells, args.knn);
     let (gp, gp_n) = corrdim::correlation_curve(&embed, args.twonn_cells, 20);
     let scale = twonn::scale_analysis(
         &embed,
@@ -99,6 +108,7 @@ fn main() -> Result<()> {
         twonn::plateau(&scale, PLATEAU_TOL),
         corrdim::correlation_dimension(&gp, gp_n, GP_TOL),
         betti::patch_count(&mst, MAX_PATCHES, MIN_MST_GAP),
+        fiedler::fiedler(&lap, MAX_PATCHES, MIN_EIGENGAP),
     ];
 
     match args.format {
@@ -127,6 +137,8 @@ fn main() -> Result<()> {
             for e in &estimates {
                 println!("{:<14} {:>4}   {}", e.name, e.rank, e.detail);
             }
+            let lo: Vec<String> = lap.iter().take(8).map(|e| format!("{e:.3e}")).collect();
+            println!("\nLaplacian spectrum (lowest 8): {}", lo.join("  "));
             println!("\nCorrelation integral (Grassberger-Procaccia):");
             println!("{:>10} {:>10} {:>8}", "r", "C(r)", "slope");
             for p in &gp {
@@ -163,7 +175,7 @@ fn main() -> Result<()> {
                 .collect();
             let head = spec.eigenvalues.iter().take(50);
             println!(
-                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"correlation_integral":[{}],"scale_analysis":[{}]}}"#,
+                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"correlation_integral":[{}],"scale_analysis":[{}]}}"#,
                 args.path,
                 spec.n,
                 spec.p,
@@ -178,6 +190,11 @@ fn main() -> Result<()> {
                 spec.biwhitening_residual,
                 ranks.join(","),
                 head.map(|e| format!("{e:.6}")).collect::<Vec<_>>().join(","),
+                lap.iter()
+                    .take(40)
+                    .map(|e| format!("{e:.8}"))
+                    .collect::<Vec<_>>()
+                    .join(","),
                 gp.iter()
                     .map(|p| format!(
                         r#"{{"r":{:.6},"c":{:.8},"slope":{:.6}}}"#,

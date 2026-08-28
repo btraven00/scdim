@@ -7,6 +7,7 @@
 
 pub mod betti;
 pub mod corrdim;
+pub mod fiedler;
 pub mod io;
 pub mod rank;
 pub mod tw;
