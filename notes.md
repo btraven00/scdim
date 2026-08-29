@@ -346,6 +346,50 @@ Measured, same three datasets: trachea λ₁ = 5.1e-3 / gap 1.90×, tm-facs
 2.5e-3 / 1.64×, pbmc 1.5e-3 / 4.32×. All connected, and pbmc is again the most
 patchy — the same ordering β₀ gives from a different construction.
 
+### The ratio does not survive a change of cloud size
+
+Across the same three datasets at ~2000, ~4000 and ~8000 cells the eigengap ran
+2.08/2.05/1.93, 3.74/2.93/3.58 and **3.46/4.22/6.40**. On the third it crosses
+the 5× threshold somewhere in that range, so the row was flipping from "one
+patch" to "5 weakly-joined patches" purely by moving `--geom-cells`. That is
+worse than a wrong number: it is a wrong *verdict*, produced by a knob that has
+nothing to do with the biology.
+
+The cause is structural. It is a max over `max_patches` order statistics of a
+noisy ratio, so it is an extreme-value statistic and grows with whatever it is
+maximised over; and the spectrum underneath is itself N-dependent, because a
+graph Laplacian's eigenvalues converge to the manifold operator's only after a
+bandwidth-dependent rescaling, and without one λ_k → 0 as N grows.
+
+**Renormalising does not rescue it, and this was measured rather than assumed.**
+Weyl's law gives λ_k ~ k^(2/d) for a connected d-manifold, so the spacings
+
+```
+g_k = (log λ_{k+1} − log λ_k) / (log(k+1) − log k)
+```
+
+should be flat at 2/d for any d and any N — and they are *exactly* 2 on a path
+graph, which is the elegant part. But the denominator falls from 0.69 at k=1 to
+0.025 at k=39, so the transform amplifies high-k spectral noise and manufactures
+gaps. Tried on the same three datasets it turned two of them into spurious
+patch counts (zheng 5.24 → "5 patches" at one cloud size, 6.19 → "15 patches" at
+the next). It was implemented, measured, and reverted; the reasoning is left in
+the source so nobody re-derives it.
+
+So the row hedges. A ratio that clears 5× by less than 30% is inside its own
+measured drift and gets `MARGINAL` with no patch count. The band is one-sided
+and the asymmetry is the point: *below* the threshold there is a principled null
+— a path graph tops out at 4 — so anything under 5 is consistent with a
+connected manifold however thin, and a symmetric band would swallow that at 4.0
+and hedge on the one case this row was designed to get right. Above 5 there is
+no scale at all, which is exactly where the drift bites.
+
+Result on the nine runs: every one now reports one patch, eight say `connected`
+and only seurat at 8000 cells says `MARGINAL` — where it previously asserted
+five. When the row hedges, `betti0` answers the same question from the MST with
+no k, no bandwidth and no eigensolver, and its `clumpiness` is the number to
+read.
+
 Known gap: a node whose affinities all underflow to zero gets an identity row
 and eigenvalue 1, so it is not counted as its own component. Union
 symmetrisation makes this rare (every node keeps k edges) but it is possible
@@ -575,7 +619,7 @@ data rather than the sample.
 | MST step ratio (was `betti0`'s) | 11–13%, monotone → 1 | ~3% at 8000 | dead |
 | **clumpiness** `log(AM/GM)` | 7–8% | **2×**, same order at every size | keeps |
 | ricci tail skew | 15–25% | ~1.5× | weak but honest |
-| fiedler eigengap | 3.46 → 6.40 on one dataset | — | **broken, see below** |
+| fiedler eigengap | 3.46 → 6.40 on one dataset | — | **hedged, see below** |
 
 The MST step ratio decays toward 1 as the cloud grows, because a denser MST has
 a smaller maximum step whatever the structure — at 8000 cells the three datasets
