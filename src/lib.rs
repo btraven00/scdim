@@ -10,6 +10,7 @@ pub mod corrdim;
 pub mod fiedler;
 pub mod geom;
 pub mod io;
+pub mod localpca;
 pub mod rank;
 pub mod progress;
 pub mod ricci;

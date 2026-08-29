@@ -388,6 +388,7 @@ pub fn curvature_summary(kappa: &[f64], cut: f64) -> Estimate {
             name: "ricci-neg",
             rank: 0,
             detail: "too few points for a k-NN graph".to_string(),
+            stat: None,
             pvalues: Vec::new(),
         };
     }
@@ -405,6 +406,7 @@ pub fn curvature_summary(kappa: &[f64], cut: f64) -> Estimate {
             name: "ricci-neg",
             rank: 0,
             detail: format!("degenerate: every cell has kappa = {median:+.3}"),
+            stat: None,
             pvalues: Vec::new(),
         };
     }
@@ -414,17 +416,30 @@ pub fn curvature_summary(kappa: &[f64], cut: f64) -> Estimate {
     let high = kappa.iter().filter(|&&k| z(k) > cut).count();
     let neg = kappa.iter().filter(|&&k| k < 0.0).count();
     let asym = low as f64 / high.max(1) as f64;
+    // The count-ratio above is degenerate: `low` is 0 on six of the seven
+    // datasets tried, so it reports 0.00 whatever the shape of the left tail.
+    // Hinkley's quantile skew answers the same question -- is there mass on the
+    // left with nothing matching on the right -- continuously, on percentiles
+    // that always exist, bounded in [-1, 1] and free of any scale. Negative is
+    // the direction bottlenecks live in.
+    let (q05, q95) = (pct(0.05), pct(0.95));
+    let skew = if q95 > q05 {
+        (q95 + q05 - 2.0 * median) / (q95 - q05)
+    } else {
+        0.0
+    };
 
     Estimate {
         name: "ricci-neg",
         rank: low,
         detail: format!(
-            "{low}/{n} cells beyond -{cut} robust-z ({high} beyond +{cut}, tail asymmetry \
-             {asym:.2}x); kappa median {median:+.3}, MAD {mad:.3}, min {:+.3}; \
-             {:.0}% have kappa < 0",
+            "{low}/{n} cells beyond -{cut} robust-z ({high} beyond +{cut}, count ratio \
+             {asym:.2}x); tail skew {skew:+.3}; kappa median {median:+.3}, MAD {mad:.3}, \
+             min {:+.3}; {:.0}% have kappa < 0",
             sorted[0],
             100.0 * neg as f64 / n as f64,
         ),
+        stat: Some(skew),
         pvalues: Vec::new(),
     }
 }
@@ -539,12 +554,14 @@ mod tests {
     /// The scale-free cut has to be symmetric on flat space and left-heavy on
     /// a bottleneck. That asymmetry, not the raw fraction below zero, is what
     /// makes the count mean something.
+    ///
+    /// Read off `stat`, not out of the detail string: the count ratio it used
+    /// to scrape is 0.00 on six of the seven real datasets tried, because
+    /// `low` is zero and no ratio survives that. The quantile skew is the same
+    /// question asked continuously.
     #[test]
     fn tail_asymmetry_separates_flat_from_bottleneck() {
-        let asym = |e: &Estimate| {
-            let s = e.detail.split("asymmetry ").nth(1).unwrap();
-            s[..s.find('x').unwrap()].trim().parse::<f64>().unwrap()
-        };
+        let asym = |e: &Estimate| e.stat.expect("summary always reports a skew");
 
         let mut r = lcg(4);
         let flat = Mat::from_fn(600, 4, |_, _| r() + r() + r());
@@ -566,8 +583,10 @@ mod tests {
         let br_k = curvature(&bridged, n, 10, 0.5, Metric::Geodesic);
         let br_s = curvature_summary(&br_k, 3.5);
 
+        // Bottlenecks put mass in the left tail, so the skew must be *more
+        // negative* than flat space's.
         assert!(
-            asym(&br_s) > asym(&flat_s),
+            asym(&br_s) < asym(&flat_s),
             "bottleneck tail ({}) should outweigh flat tail ({})",
             br_s.detail,
             flat_s.detail

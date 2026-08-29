@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use scdim::{betti, corrdim, fiedler, geom, io, progress::Progress, rank, ricci, twonn};
+use scdim::{betti, corrdim, fiedler, geom, io, localpca, progress::Progress, rank, ricci, twonn};
 
 #[derive(Parser)]
 #[command(about = "Estimate the number of signal components in a single-cell matrix")]
@@ -170,13 +170,14 @@ fn main() -> Result<()> {
     // The geometric diagnostics share the cloud read-only and do not talk
     // to each other, so they run concurrently. Each is internally parallel
     // too; rayon's work stealing sorts that out. Their reported times overlap.
-    pr.begin("geometry (6 diagnostics, in parallel)");
+    pr.begin("geometry (7 diagnostics, in parallel)");
     let mut mst = Default::default();
     let mut lap = Default::default();
     let mut kappa = Default::default();
     let mut gp = Default::default();
     let mut nn: (Option<rank::Estimate>, f64) = Default::default();
     let mut scale = Default::default();
+    let mut lpca = Default::default();
     rayon::scope(|s| {
         s.spawn(|_| mst = timed(|| betti::mst_weights(&cloud)));
         s.spawn(|_| lap = timed(|| fiedler::laplacian_spectrum(&cloud, &knn)));
@@ -190,6 +191,7 @@ fn main() -> Result<()> {
         s.spawn(|_| {
             scale = timed(|| twonn::scale_analysis(&cloud, args.twonn_reps, args.twonn_trim))
         });
+        s.spawn(|_| lpca = timed(|| localpca::local_pca(&cloud, embed_k)));
     });
     pr.stage("  minimum spanning tree", mst.1, &format!("{} edges", mst.0.len()));
     pr.stage("  laplacian spectrum", lap.1, &format!("{} eigenvalues", lap.0.len()));
@@ -200,8 +202,10 @@ fn main() -> Result<()> {
     );
     pr.stage("  correlation integral", gp.1, &format!("{} points", gp.0 .1));
     pr.stage("  twonn scale analysis", scale.1, &format!("{} levels", scale.0.len()));
+    pr.stage("  local pca", lpca.1, &format!("{} radii", lpca.0.len()));
     pr.stage("  twonn fit", nn.1, &format!("d = {}", nn.0.as_ref().expect("spawned").rank));
-    let (mst, lap, kappa, (gp, gp_n), scale) = (mst.0, lap.0, kappa.0, gp.0, scale.0);
+    let (mst, lap, kappa, (gp, gp_n), scale, lpca) =
+        (mst.0, lap.0, kappa.0, gp.0, scale.0, lpca.0);
     pr.finish();
 
     let estimates = [
@@ -210,6 +214,7 @@ fn main() -> Result<()> {
         nn.0.expect("spawned"),
         twonn::plateau(&scale, PLATEAU_TOL),
         corrdim::correlation_dimension(&gp, gp_n, GP_TOL),
+        localpca::summary(&lpca, embed_k),
         betti::patch_count(&mst, MAX_PATCHES, MIN_MST_GAP),
         fiedler::fiedler(&lap, MAX_PATCHES, MIN_EIGENGAP),
         ricci::curvature_summary(&kappa, args.ricci_cut),
@@ -239,7 +244,10 @@ fn main() -> Result<()> {
                 );
             }
             for e in &estimates {
-                println!("{:<14} {:>4}   {}", e.name, e.rank, e.detail);
+                // The middle column is a count; the next one is the continuous
+                // reading, for the rows whose answer is a matter of degree.
+                let stat = e.stat.map_or(String::new(), |v| format!("{v:.3}"));
+                println!("{:<14} {:>4} {:>8}   {}", e.name, e.rank, stat, e.detail);
             }
             let lo: Vec<String> = lap.iter().take(8).map(|e| format!("{e:.3e}")).collect();
             println!("\nLaplacian spectrum (lowest 8): {}", lo.join("  "));
@@ -261,6 +269,17 @@ fn main() -> Result<()> {
                     p.n, p.mean_r2, p.d
                 );
             }
+            println!("\nLocal PCA (Little-Maggioni-Rosasco):");
+            println!(
+                "{:>8} {:>10} {:>8} {:>9} {:>9}",
+                "k", "<r_k>", "d", "ceiling", "centres"
+            );
+            for p in &lpca {
+                println!(
+                    "{:>8} {:>10.3} {:>8.2} {:>9} {:>9}",
+                    p.k, p.mean_r, p.d, p.ceiling, p.centres
+                );
+            }
         }
         Format::Json => {
             let ranks: Vec<String> = estimates
@@ -269,9 +288,12 @@ fn main() -> Result<()> {
                     let pv: Vec<String> =
                         e.pvalues.iter().map(|p| format!("{p:.6e}")).collect();
                     format!(
-                        r#"{{"name":"{}","rank":{},"detail":"{}","pvalues":[{}]}}"#,
+                        r#"{{"name":"{}","rank":{},"stat":{},"detail":"{}","pvalues":[{}]}}"#,
                         e.name,
                         e.rank,
+                        e.stat
+                            .filter(|v| v.is_finite())
+                            .map_or("null".to_string(), |v| format!("{v:.6}")),
                         e.detail.replace('"', "'"),
                         pv.join(",")
                     )
@@ -279,7 +301,7 @@ fn main() -> Result<()> {
                 .collect();
             let head = spec.eigenvalues.iter().take(50);
             println!(
-                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}]}}"#,
+                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}],"local_pca":[{}]}}"#,
                 args.path,
                 spec.n,
                 spec.p,
@@ -312,6 +334,13 @@ fn main() -> Result<()> {
                     .map(|p| format!(
                         r#"{{"n":{},"mean_r2":{:.6},"d":{:.6},"spread":[{:.6},{:.6}]}}"#,
                         p.n, p.mean_r2, p.d, p.spread.0, p.spread.1
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                lpca.iter()
+                    .map(|p| format!(
+                        r#"{{"k":{},"mean_r":{:.6},"d":{:.6},"ceiling":{},"centres":{}}}"#,
+                        p.k, p.mean_r, p.d, p.ceiling, p.centres
                     ))
                     .collect::<Vec<_>>()
                     .join(",")

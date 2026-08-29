@@ -18,27 +18,35 @@ cargo run --release -- data.h5ad --max-cells 5000 --format json
 ```
 
 ```
-setty2019_raw_merged.h5ad  4283x2000 of 21412x20583  q=0.4670  density=31.8%  embed=39D  sigma2=0.8071  bulk-KS=0.0250
-tracy-widom      39   stopped at component 40: TW1 statistic 2.081, p = 9.064e-3 > 0.001
-mp-edge          41   eigenvalues above lambda+ = 2.8337
-twonn            16   d = 15.78 (95% CI 14.98-16.63), 1413/1428 ratios after 1% trim
-twonn-plateau     0   no plateau: d drifts 15.8 -> 10.2 from N=1428 to N=89, ...
-corr-dim         11   D = 11.26 over 9 scales flat to 15% -- AT THE CEILING: 1428 points support D <= 6.3
-betti0            1   continuous: largest MST step is 1.07x (< 2), longest edge 1.9x the median
-fiedler           1   connected: lambda_1 = 4.21e-3, largest relative eigengap only 3.10x (< 5)
-ricci-neg         0   0/1428 cells beyond -3.5 robust-z (23 beyond +3.5, tail asymmetry 0.00x)
+Norman_2019.h5ad  3974x2000 of 111255x19018  q=0.5033  density=60.9%  embed=29D  sigma2=0.8709  bulk-KS=0.0103
+tracy-widom      29            stopped at component 30: TW1 statistic 2.068, p = 9.276e-3 > 0.001
+mp-edge          31            eigenvalues above lambda+ = 2.9221
+twonn            18   17.699   d = 17.70 (95% CI 16.93-18.50), 1967/1987 ratios after 1% trim
+twonn-plateau    14   13.784   d = 13.78 over N = 62..248 (3 levels within 10%)
+corr-dim         15   15.106   D = 15.11 over 7 scales flat to 15% -- AT THE CEILING: D <= 6.6
+local-pca        14   14.234   d = 14.23 at the dip (k=256, r=16.79); 16.00 at k=16 -> 14.23 at k=256
+betti0            1    0.010   continuous: clumpiness 0.010, largest MST step 1.12x (< 2)
+fiedler           1    2.057   connected: lambda_1 = 2.64e-2, largest relative eigengap only 2.06x
+ricci-neg         0    0.192   0/1987 beyond -3.5 robust-z; tail skew +0.192; 80% have kappa < 0
 ```
 
-Followed by three tables: the lowest Laplacian eigenvalues, the correlation
-integral, and the TwoNN scale analysis. `--format json` puts the same numbers
-plus the raw spectra on one line for `jq`. Progress goes to stderr, so the JSON
+Followed by four tables: the lowest Laplacian eigenvalues, the correlation
+integral, the TwoNN scale analysis, and the local-PCA walk. `--format json`
+puts the same numbers plus the raw spectra on one line for `jq`. Progress goes to stderr, so the JSON
 stays pipeable; `-q` silences it.
 
 ## What the rows mean
 
+**The third column is the continuous reading**, where the row has one. Two rows
+have no integer to give: `betti0` has returned 1 and `ricci-neg` 0 on every
+dataset ever tried, because "one piece or several" and "how deep are the
+bottlenecks" are matters of degree that a count can only answer once a
+threshold has already decided them. It is blank for `tracy-widom` and `mp-edge`,
+which really are counting eigenvalues.
+
 The middle column is not one quantity. Rows 1-2 are a **rank** (linear
-components above the noise floor), rows 3-5 are a **dimension** (of the
-manifold the cells lie on), rows 6-7 are a **piece count**, row 8 is a **cell
+components above the noise floor), rows 3-6 are a **dimension** (of the
+manifold the cells lie on), rows 7-8 are a **piece count**, row 9 is a **cell
 count**. They are not comparable to each other and none of them is the number
 of cell types.
 
@@ -49,13 +57,14 @@ of cell types.
 | `twonn` | intrinsic dimension from 1st/2nd neighbour ratios | dimension |
 | `twonn-plateau` | that estimate at the scale where it stops moving | dimension |
 | `corr-dim` | Grassberger-Procaccia slope of log C(r) | dimension |
-| `betti0` | one connected manifold, or separated patches? | patches |
+| `local-pca` | dimension of the local covariance, against neighbourhood size | dimension |
+| `betti0` | one connected manifold, or separated patches? | patches (+ clumpiness) |
 | `fiedler` | same question via the Laplacian eigengap | patches |
-| `ricci-neg` | which cells sit on bottlenecks (extreme negative curvature)? | cells |
+| `ricci-neg` | which cells sit on bottlenecks (extreme negative curvature)? | cells (+ tail skew) |
 
-Rows 3-8 run on the PCA scores truncated at the Tracy-Widom rank, not on the
+Rows 3-9 run on the PCA scores truncated at the Tracy-Widom rank, not on the
 gene matrix; in 2000 ambient dimensions the distances they need have
-concentrated away. The embedding is capped at 100 columns. All six share one
+concentrated away. The embedding is capped at 100 columns. All seven share one
 Gram matrix and one k-NN graph and run concurrently, so their reported times
 overlap.
 
@@ -72,6 +81,20 @@ Sinkhorn's own convergence flag is *not* the diagnostic — see notes.md.
 
 **Genes are pre-selected by variance**, which is selection on the same
 statistic the spectrum measures. Expect a mild upward bias in the rank.
+
+**Every dimension row is an upper bound at these cell counts.** Measured on
+three datasets at clouds of 2000, 4000 and 8000 cells: `twonn` rises
+monotonically with the cloud (more cells, smaller r, more noise), `corr-dim` is
+above its ceiling at every size, and `local-pca` is still falling at the largest
+radius the ladder reaches — even at k = 1024, an eighth of the cloud. No scale
+reachable here is free of the noise floor. See notes.md for the table.
+
+**`local-pca` reports the dip, not the ends.** The curve is noise-inflated at
+small radius and cluster-inflated at large radius; the manifold is the minimum
+in between. Both ends are failure modes, and the row says which one it is
+sitting on. A radius whose estimate is pinned against `min(k, embed)` is
+excluded from the search — pinned levels are pinned *low* and would win it by
+construction.
 
 **`corr-dim` has a hard ceiling** of D <= 2·log₁₀ N (Eckmann-Ruelle). Above it
 the estimator returns something too small without failing. The row shouts when
@@ -118,6 +141,14 @@ swallowing whole neighbouring clusters, so C(r) grows faster than a power law:
 the set is not self-similar and has no single dimension. Always read the slope
 against the ceiling in the `corr-dim` row.
 
+**Local PCA.** Same three regimes as the correlation integral, read off the
+covariance instead of the pair counts. `ceiling` is `min(k, embed)`: a k+1-point
+neighbourhood spans at most k directions, so a level at its ceiling has measured
+nothing. Read `d` against it at every row, and read the dip rather than either
+end. Where it agrees with `twonn-plateau` — two estimators with different
+failure modes landing on the same number — that is the strongest dimension
+evidence the tool produces.
+
 **TwoNN scale analysis.** `d` should fall as N shrinks and then flatten; the
 flat part is the answer. Check `<r2>` actually moved — the scale probed goes as
 N^(−1/d), so a large d leaves almost no leverage. A 32× decimation moving ⟨r₂⟩
@@ -137,4 +168,6 @@ a plateau resting only on the noisiest level is not one.
 - Grassberger & Procaccia, Physica D **9**, 189 (1983); Eckmann & Ruelle,
   Physica D **56**, 185 (1992) — the correlation integral and its ceiling.
 - Zelnik-Manor & Perona, NIPS (2004) — self-tuning affinities.
+- Little, Maggioni & Rosasco, Appl. Comput. Harmon. Anal. **43**, 504 (2017) —
+  multiscale SVD, the local-PCA walk.
 - Ollivier, J. Funct. Anal. **256**, 810 (2009) — coarse Ricci curvature.

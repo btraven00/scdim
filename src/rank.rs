@@ -185,6 +185,18 @@ pub fn longest_flat_run(vals: &[f64], tol: f64) -> std::ops::Range<usize> {
 pub struct Estimate {
     pub name: &'static str,
     pub rank: usize,
+    /// The continuous reading, where the row has one.
+    ///
+    /// Two rows here have no integer to give: `betti0` has returned 1 and
+    /// `ricci-neg` 0 on every dataset tried, because "one piece or several" and
+    /// "how deep are the bottlenecks" are matters of degree that a count can
+    /// only answer once a threshold has already decided them. Forcing every
+    /// heuristic through `rank: usize` is what made those two print a constant
+    /// while their actual content sat in the detail string as prose.
+    ///
+    /// `None` where the answer really is a count -- `tracy-widom` and `mp-edge`
+    /// are counting eigenvalues and nothing is being rounded away.
+    pub stat: Option<f64>,
     /// Human-readable justification (threshold, statistic, ...).
     pub detail: String,
     /// Per-component p-values, where the heuristic is a sequence of tests.
@@ -234,6 +246,7 @@ pub fn tracy_widom(s: &Spectrum, alpha: f64, k_max: usize) -> Estimate {
                     "stopped at component {}: TW1 statistic {stat:.3}, p = {pv:.3e} > {alpha}",
                     k + 1
                 ),
+                stat: None,
                 pvalues,
             };
         }
@@ -246,6 +259,7 @@ pub fn tracy_widom(s: &Spectrum, alpha: f64, k_max: usize) -> Estimate {
             "hit k_max={k_max}, component {k_max} still significant (p = {last:.3e}); \
              the rank is a floor, not a result -- raise --k-max"
         ),
+        stat: None,
         pvalues,
     }
 }
@@ -263,6 +277,7 @@ pub fn mp_edge(s: &Spectrum) -> Estimate {
         name: "mp-edge",
         rank,
         detail: format!("eigenvalues above lambda+ = {lp:.4}"),
+        stat: None,
         pvalues: Vec::new(),
     }
 }

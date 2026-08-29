@@ -81,6 +81,7 @@ fn estimate_from_mus(mut mus: Vec<f64>, c_trimmed: f64, conf: f64) -> Estimate {
             name: "twonn",
             rank: 0,
             detail: format!("undefined: {n} usable neighbour ratios"),
+            stat: None,
             pvalues: Vec::new(),
         };
     }
@@ -99,6 +100,7 @@ fn estimate_from_mus(mut mus: Vec<f64>, c_trimmed: f64, conf: f64) -> Estimate {
             conf * 100.0,
             c_trimmed * 100.0
         ),
+        stat: Some(d),
         pvalues: Vec::new(),
     }
 }
@@ -200,6 +202,7 @@ pub fn plateau(points: &[ScalePoint], tol: f64) -> Estimate {
                 "no plateau: {} decimation levels, need {MIN_PLATEAU_LEVELS}",
                 points.len()
             ),
+            stat: None,
             pvalues: Vec::new(),
         };
     }
@@ -216,6 +219,7 @@ pub fn plateau(points: &[ScalePoint], tol: f64) -> Estimate {
                  consecutive levels within {:.0}% -- read the table, not this row",
                 h.d, l.d, h.n, l.n, tol * 100.0
             ),
+            stat: None,
             pvalues: Vec::new(),
         };
     }
@@ -230,6 +234,7 @@ pub fn plateau(points: &[ScalePoint], tol: f64) -> Estimate {
             run.len(),
             tol * 100.0
         ),
+        stat: Some(d),
         pvalues: Vec::new(),
     }
 }

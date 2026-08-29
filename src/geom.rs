@@ -1,4 +1,4 @@
-//! The shared point cloud: one Gram matrix and one k-NN graph, five heuristics.
+//! The shared point cloud: one Gram matrix and one k-NN graph, six heuristics.
 //!
 //! Every geometric diagnostic here wants the same two things: pairwise
 //! distances among the same strided subsample, and (for two of them) the same

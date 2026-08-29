@@ -88,6 +88,7 @@ pub fn patch_count(weights: &[f64], max_patches: usize, min_gap: f64) -> Estimat
             name: "betti0",
             rank: 0,
             detail: "too few points for an MST".to_string(),
+            stat: None,
             pvalues: Vec::new(),
         };
     }
@@ -105,15 +106,18 @@ pub fn patch_count(weights: &[f64], max_patches: usize, min_gap: f64) -> Estimat
     let patches = l - best_i;
     let median = weights[l / 2];
     let spread = weights[l - 1] / median;
+    let clump = clumpiness(weights);
 
     if best_ratio < min_gap {
         return Estimate {
             name: "betti0",
             rank: 1,
             detail: format!(
-                "continuous: largest MST step is {best_ratio:.2}x (< {min_gap}), longest edge \
-                 {spread:.1}x the median -- one connected manifold, no separated patches"
+                "continuous: clumpiness {clump:.3}, largest MST step {best_ratio:.2}x \
+                 (< {min_gap}), longest edge {spread:.1}x the median -- one connected \
+                 manifold, no separated patches"
             ),
+            stat: Some(clump),
             pvalues: Vec::new(),
         };
     }
@@ -121,13 +125,46 @@ pub fn patch_count(weights: &[f64], max_patches: usize, min_gap: f64) -> Estimat
         name: "betti0",
         rank: patches,
         detail: format!(
-            "{patches} patches: MST step {best_ratio:.2}x at edge {}/{l} (r = {:.3}), longest \
-             edge {spread:.1}x the median",
+            "{patches} patches: clumpiness {clump:.3}, MST step {best_ratio:.2}x at edge \
+             {}/{l} (r = {:.3}), longest edge {spread:.1}x the median",
             best_i + 1,
             weights[best_i + 1]
         ),
+        stat: Some(clump),
         pvalues: Vec::new(),
     }
+}
+
+/// Clumpiness of the H_0 barcode: `log(arithmetic mean / geometric mean)` of
+/// the bar lengths.
+///
+/// The integer this module returns is 1 on every dataset ever run through it,
+/// and the statistic it was thresholding -- the largest relative step -- turns
+/// out to measure the sample size as much as the data: it decays 1.17 -> 1.06
+/// -> 1.04 as the cloud goes 2000 -> 4000 -> 8000, because a denser MST has a
+/// smaller maximum step whatever the structure. It cannot be compared across
+/// runs at different `--geom-cells`.
+///
+/// This is the normalised persistent entropy's deviation from uniform,
+/// `(1 - H/log(N-1)) * log(N-1)`, which cancels the N-dependence
+/// analytically and collapses to the log ratio of the two means. Zero for a
+/// perfectly regular sampling, growing as the bar lengths spread; scale-free,
+/// since a global rescale of the embedding cancels top and bottom; and it rests
+/// on all N-1 bars rather than on one order statistic, so it is not a max of
+/// noisy ratios.
+///
+/// Zero-length bars are dropped. Exactly coincident cells are common in count
+/// data and would send the geometric mean to zero -- the same failure `twonn`
+/// trims for.
+pub fn clumpiness(weights: &[f64]) -> f64 {
+    let pos: Vec<f64> = weights.iter().copied().filter(|&w| w > 0.0).collect();
+    if pos.len() < 2 {
+        return 0.0;
+    }
+    let n = pos.len() as f64;
+    let log_am = (pos.iter().sum::<f64>() / n).ln();
+    let mean_log = pos.iter().map(|w| w.ln()).sum::<f64>() / n;
+    log_am - mean_log
 }
 
 #[cfg(test)]
@@ -185,6 +222,32 @@ mod tests {
         let x = Mat::from_fn(800, 10, |_, _| r() + r() + r() - 1.5);
         let est = patch_count(&mst_weights(&Cloud::new(&x, 800)), 20, 2.0);
         assert_eq!(est.rank, 1, "{}", est.detail);
+    }
+
+    /// Clumpiness has to be zero on a regular barcode, positive on a spread
+    /// one, and unmoved by a global rescale -- the property the MST step ratio
+    /// has and the sample size does not.
+    #[test]
+    fn clumpiness_is_scale_free_and_ordered() {
+        let flat = vec![1.0; 500];
+        assert!(clumpiness(&flat).abs() < 1e-12);
+
+        let mut spread: Vec<f64> = (1..=500).map(|i| i as f64).collect();
+        let c = clumpiness(&spread);
+        assert!(c > 0.3, "spread barcode gave {c:.3}");
+        for w in &mut spread {
+            *w *= 1e6;
+        }
+        assert!((clumpiness(&spread) - c).abs() < 1e-9, "not scale-free");
+
+        // A few long bridging bars must raise it above the same bulk alone.
+        let mut bulk = vec![1.0; 500];
+        let base = clumpiness(&bulk);
+        bulk.extend([20.0, 25.0, 30.0]);
+        assert!(clumpiness(&bulk) > base + 0.02, "bridges did not register");
+
+        // Coincident cells must not send it to infinity.
+        assert!(clumpiness(&[0.0, 0.0, 1.0, 2.0]).is_finite());
     }
 
     /// The barcode has to be a barcode: N-1 finite, sorted, non-negative

@@ -107,6 +107,7 @@ pub fn fiedler(eigs: &[f64], max_patches: usize, min_ratio: f64) -> Estimate {
             name: "fiedler",
             rank: 0,
             detail: "too few points for a k-NN graph".to_string(),
+            stat: None,
             pvalues: Vec::new(),
         };
     }
@@ -135,6 +136,7 @@ pub fn fiedler(eigs: &[f64], max_patches: usize, min_ratio: f64) -> Estimate {
                 "PARTITIONED: {components} exact connected components (lambda_1 = \
                  {lambda1:.2e}); next relative eigengap {best_ratio:.2}x at k = {best_k}"
             ),
+            stat: Some(best_ratio),
             pvalues: Vec::new(),
         };
     }
@@ -146,6 +148,7 @@ pub fn fiedler(eigs: &[f64], max_patches: usize, min_ratio: f64) -> Estimate {
                 "{best_k} weakly-joined patches: connected (lambda_1 = {lambda1:.2e}) but \
                  relative eigengap {best_ratio:.2}x at k = {best_k} (>= {min_ratio})"
             ),
+            stat: Some(best_ratio),
             pvalues: Vec::new(),
         };
     }
@@ -157,6 +160,7 @@ pub fn fiedler(eigs: &[f64], max_patches: usize, min_ratio: f64) -> Estimate {
              {best_ratio:.2}x (< {min_ratio}) -- one patch. Note a small lambda_1 alone \
              means thin, not split: a path graph gives ~(pi/N)^2"
         ),
+        stat: Some(best_ratio),
         pvalues: Vec::new(),
     }
 }

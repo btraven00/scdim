@@ -10,11 +10,13 @@ is the user-facing part; this is the working record.
 - [Why Sinkhorn's convergence flag is not the diagnostic](#why-sinkhorns-convergence-flag-is-not-the-diagnostic)
 - [TwoNN](#twonn) and [the scale analysis](#twonn-scale-analysis-decimation)
 - [Correlation dimension](#correlation-dimension)
+- [Local PCA](#local-pca)
 - [Betti-0 from the MST](#betti-0-from-the-mst)
 - [Fiedler value and eigengap](#fiedler-value-and-eigengap)
 - [Ollivier-Ricci curvature](#ollivier-ricci-curvature)
-- [One cloud, five diagnostics](#one-cloud-five-diagnostics)
+- [One cloud, six diagnostics](#one-cloud-six-diagnostics)
 - [Geometry in the signal subspace](#geometry-in-the-signal-subspace)
+- [Does a bigger cloud help?](#does-a-bigger-cloud-help)
 - [Measurements on labelled data](#measurements-on-labelled-data)
 - [Deferred: scwarp acceleration](#deferred-scwarp-acceleration)
 - [Candidates not implemented](#candidates-not-implemented)
@@ -195,6 +197,82 @@ trajectory case, D of order 2–5. The unit tests cover that regime: a filled
 Note the flat-run search can settle on the small-r noise floor when that is the
 longest flat stretch, which is what the ceiling warning is for.
 
+## Local PCA
+
+`tracy-widom` is the rank of the covariance of the whole cloud; `twonn` is the
+dimension of the tangent space at a point. They are the same quantity at two
+scales — the intrinsic dimension is the rank of the *local* covariance as
+r → 0 — so eigendecomposing each cell's k-neighbourhood and growing k walks
+continuously from one row to the other. Little, Maggioni & Rosasco (2017).
+
+In a ball of radius r on a d-manifold the local covariance has d eigenvalues of
+order r², the tangent directions, and up to d(d+1)/2 of order r⁴ from the second
+fundamental form. A flat patch gives the same d at every radius; a curved one
+spends extra linear dimensions as the ball grows. **The gap between rows 1 and 3
+is not error, it is bending.**
+
+Read off the double-centred squared-distance matrix of the neighbourhood
+(classical MDS) rather than the coordinates — the same "XᵀX and XXᵀ share their
+nonzero eigenvalues" identity `rank` uses, and it needs nothing from the cloud
+but `d2`. Centres are strided to 256; radii double from k = 16 to k = 256.
+
+### No threshold, and the bias that costs
+
+Counting "eigenvalues above the r⁴ shoulder" needs a cut, and every cut would be
+one more knob calibrated on one dataset. The participation ratio needs none:
+
+```
+d = (Σλ)² / Σλ²
+```
+
+exactly d for an isotropic d-dimensional patch. Two things about it:
+
+- **It is deflated at small k.** A covariance from k+1 points has dispersed
+  sample eigenvalues even when the population ones are equal. For Wishart,
+  E[tr S] = d and E[tr S²] = d(d+k+1)/k, so the ratio converges to d/(1 + d/k),
+  not to d — 2.2 instead of 3 at k = 8, measured, matching the prediction of
+  2.18. Inverting gives `d = PR / (1 − PR/k)`, and that is the whole correction.
+  It is largest exactly where the number matters most, at the small-radius end.
+- **It weights by variance, so it is conservative.** A single weak direction
+  barely moves it: a 90° arc of a circle has λ₂/λ₁ = 4% and still reads 1.09. It
+  will not manufacture dimensions out of mild curvature and it will not resolve
+  them either. What it does see is directions carrying *comparable* variance,
+  which is the noise case and the multiple-cell-types case.
+
+### Read the dip
+
+Same three regimes as C(r), for the same reason: at small k the ball is inside
+the noise, which is full-rank, so d is inflated; at large k it swallows
+curvature and neighbouring cell types, so d is inflated again; the manifold is
+the minimum between. Both ends are failure modes and the row names which one it
+is on.
+
+A level pinned against `min(k, embed)` is excluded from the dip search. It has
+measured nothing, and it is pinned *low*, so leaving it in makes it the minimum
+by construction — on the Seurat PBMC file, k = 16 and k = 32 both sat on their
+ceilings (16.00 and 31.98) and the summary reported the ceiling back as the
+answer until they were filtered out.
+
+Measured, 4000 cells:
+
+| dataset | embed | twonn | twonn-plateau | corr-dim | local-pca dip |
+|---|---|---|---|---|---|
+| Norman 2019 | 29 | 17.70 | 13.78 | 15.1 (ceiling) | **14.23** at k=256 |
+| zheng2017 pbmc | 20 | 13.72 | none (13.7→8.3) | 11.8 (ceiling) | 8.85 at k=256 |
+| seurat pbmc | 76 | 25.19 | none (25.2→14.0) | 17.8 (ceiling) | 20.56 at k=256 |
+
+Norman is the case worth reading: `twonn-plateau` and `local-pca` are two
+estimators with unrelated failure modes and they land within 0.5 of each other,
+against a raw TwoNN of 17.7 and a `corr-dim` that is above its own ceiling and
+therefore meaningless. On the other two both rows say the same thing — still
+falling at the largest radius, every scale reachable is noise-dominated — which
+is a verdict, not a number.
+
+The ladder stops at k = 256 (`K_CAP`), not at the cloud size. All three
+datasets are still descending there, so the honest reading is an upper bound.
+Raising the cap is O(k³) per centre and would need the centre count to drop to
+pay for it.
+
 ## Betti-0 from the MST
 
 The 0-dimensional persistent homology of a Vietoris-Rips filtration is
@@ -355,6 +433,17 @@ atlas of 81 distinct types has real seams, a hematopoiesis continuum does not.
 Caveat: with 6 extreme cells out of ~1500, the asymmetry column rests on small
 counts and no null model. It ranks datasets; it does not test anything.
 
+Worse than that: `low` is zero on six of the seven datasets tried, so the count
+ratio reports 0.00 whatever the shape of the left tail. The row's float is
+therefore Hinkley's quantile skew, `(q95 + q05 − 2·median)/(q95 − q05)`, which
+asks the same question — is there mass on the left with nothing matching on the
+right — on percentiles that always exist, bounded in [−1, 1] and free of any
+scale. Negative is the direction bottlenecks live in. Measured, it drifts 15–25%
+across a 4× cloud against only ~1.5× separation between datasets, so it ranks
+weakly; and all three datasets come out *positive*, i.e. right-tailed, i.e. no
+bottleneck structure at all. The single-MAD cut behind the integer is still
+unfixed — kappa is left-skewed and Iglewicz-Hoaglin assumes symmetry.
+
 ### Implementation notes
 
 - The min-cost flow uses Dijkstra on reduced costs with potentials, not a
@@ -370,7 +459,7 @@ counts and no null model. It ranks datasets; it does not test anything.
   exact k-NN off the Gram matrix is ~4M distance evaluations — far from the
   bottleneck.
 
-## One cloud, five diagnostics
+## One cloud, six diagnostics
 
 TwoNN, correlation dimension, Betti-0, Fiedler and Ricci all want pairwise
 distances among the same strided subsample, and two of them want the same k-NN
@@ -383,7 +472,7 @@ built a fresh one per decimation level per replicate, about 18 BLAS calls per
 run for one matrix. The k-NN scan (an O(m²) `select_nth` per point) was run
 twice, once by Fiedler and once by Ricci, both sequentially.
 
-The six then run concurrently under `rayon::scope`: they share the cloud
+The seven then run concurrently under `rayon::scope`: they share the cloud
 read-only and do not talk to each other. Each is internally parallel too, and
 nesting is fine — rayon work-steals across the same pool. Measured on Setty
 2019 at the default 2000-cell cap, the geometry block goes 1.42 s → 1.09 s,
@@ -417,6 +506,84 @@ Two limits of the current wiring: only `SCORE_K = 100` score columns are
 retained, so a TW rank above 100 is silently truncated for the geometry (it
 happens on both whole-organism atlases, TW 172 and 184); and when TW hits
 `--k-max` the embedding is exactly k_max by construction.
+
+## Does a bigger cloud help?
+
+Every geometric row is capped by `--geom-cells`, and every dimension estimator's
+resolving power grows with N, so the obvious question is whether the cap is what
+is limiting them. Three datasets, `--max-cells 8000` held fixed so the embedding
+never changes, clouds of ~2000, ~4000 and ~8000 (the stride is an integer, so
+those are the sizes actually reachable — asking for 6000 out of 8000 gives 4000).
+
+| dataset | cloud | twonn | plateau | corr-dim / ceiling | local-pca |
+|---|---|---|---|---|---|
+| Norman 2019 | 1987 | 21.15 | — | 18.9 / 6.6 | 17.43 @k=256 |
+| | 3974 | 22.30 | — | 18.1 / 7.2 | 17.17 @k=512 |
+| | 7947 | 23.89 | — | 17.8 / 7.8 | 16.86 @k=1024 |
+| zheng2017 | 1972 | 15.73 | — | 13.9 / 6.6 | 10.15 @k=256 |
+| | 3944 | 16.19 | 15.43 | 14.5 / 7.2 | 9.79 @k=512 |
+| | 7888 | 17.46 | — | 13.8 / 7.8 | 10.40 @k=1024 |
+| seurat pbmc | 1926 | 27.48 | — | 19.9 / 6.6 | 22.32 @k=256 |
+| | 3852 | 29.40 | 17.56 | 21.2 / 7.2 | 20.38 @k=512 |
+| | 7704 | 32.09 | — | 21.3 / 7.8 | 17.50 @k=1024 |
+
+**No, and the reason is different for each row.**
+
+- **`twonn` rises monotonically with the cloud** on all three, 21→24, 16→17,
+  27→32. That is the estimator working correctly: more cells means a smaller
+  first-neighbour distance, which means more of the full-rank noise inside the
+  ball. The raw TwoNN number is a function of the sampling density and should
+  never be quoted without one.
+- **`corr-dim` is structurally hopeless here.** Four times the cells bought 1.2
+  of ceiling, because it grows as 2·log₁₀N. Measuring D ≈ 20 legitimately would
+  need ~10¹⁰ cells. The row can only work in the trajectory regime (D 2–5) its
+  unit tests cover.
+- **`twonn-plateau` flickers.** Plateaus appear at 4000 on two datasets and are
+  gone again at 8000. Those were an accident of where the decimation levels
+  landed, not a property of the data. Two points looked like a trend; the third
+  killed it.
+- **`local-pca` was reporting a constant of ours.** With the cap at 256 the dip
+  sat on the last rung at every cloud size and the estimate drifted 24–46%
+  across the ladder. Raising `K_CAP` to 1024 (with centres falling as 1/k², so
+  each doubling costs 2× rather than 8×) makes `k_max = min(1024, m/4)` scale
+  with the cloud, and it is the *fraction* of the cloud that turns out to be the
+  stable quantity: Norman went 24% → 3% drift, zheng 46% → 6%.
+
+Even at k = 1024 — an eighth of an 8000-cell cloud — the walk is still falling:
+
+```
+Norman @8000:  16.0*  26.59  24.96  23.28  21.56  19.61  16.86     (* ceiling-pinned)
+zheng  @8000:  16.0*  18.55  17.67  16.60  14.83  12.67  10.40
+seurat @8000:  16.0*  32.0*  39.64  35.23  31.29  25.81  17.50
+```
+
+So the honest reading of every dimension row on real scRNA-seq at these counts
+is **an upper bound**. Two estimators with unrelated failure modes now agree on
+that, which is a verdict rather than a number, and it is the thing to say out
+loud rather than bury.
+
+Cost: ~7 GB peak and ~80 s at an 8000-cell cloud, dominated by the O(m³)
+Laplacian EVD. There is no memory guard on `--geom-cells`.
+
+### Two floats that had to be replaced
+
+The same ladder is the test bed for any statistic that claims to describe the
+data rather than the sample.
+
+| statistic | 2000 → 8000 drift | separation between datasets | verdict |
+|---|---|---|---|
+| MST step ratio (was `betti0`'s) | 11–13%, monotone → 1 | ~3% at 8000 | dead |
+| **clumpiness** `log(AM/GM)` | 7–8% | **2×**, same order at every size | keeps |
+| ricci tail skew | 15–25% | ~1.5× | weak but honest |
+| fiedler eigengap | 3.46 → 6.40 on one dataset | — | **broken, see below** |
+
+The MST step ratio decays toward 1 as the cloud grows, because a denser MST has
+a smaller maximum step whatever the structure — at 8000 cells the three datasets
+read 1.04 / 1.06 / 1.07 and are indistinguishable, and at 2000 they are ordered
+differently. It was measuring the sample size. `clumpiness` drifts only slightly
+less but separates the datasets by 2× with a stable ordering, a 25:1 signal to
+drift; and zheng2017, a concatenation of separately sorted PBMC populations and
+so the most genuinely discrete of the three, is the one that scores double.
 
 ## Measurements on labelled data
 
@@ -512,5 +679,7 @@ subset.
 - Owen & Perry, Ann. Appl. Stat. **3**, 564 (2009) — bi-cross-validation.
 - Landa, Coifman & Kluger, SIAM J. Math. Data Sci. **3**, 388 (2021) —
   biwhitening by the variance matrix.
+- Little, Maggioni & Rosasco, Appl. Comput. Harmon. Anal. **43**, 504 (2017) —
+  multiscale SVD.
 - Iglewicz & Hoaglin, *How to Detect and Handle Outliers*, ASQC (1993) — the
   robust z score.

@@ -94,6 +94,7 @@ pub fn correlation_dimension(curve: &[GpPoint], n_points: usize, tol: f64) -> Es
             name: "corr-dim",
             rank: 0,
             detail: "not enough scales with pairs in them".to_string(),
+            stat: None,
             pvalues: Vec::new(),
         };
     }
@@ -109,6 +110,7 @@ pub fn correlation_dimension(curve: &[GpPoint], n_points: usize, tol: f64) -> Es
                 slopes[slopes.len() - 1],
                 tol * 100.0
             ),
+            stat: None,
             pvalues: Vec::new(),
         };
     }
@@ -129,6 +131,7 @@ pub fn correlation_dimension(curve: &[GpPoint], n_points: usize, tol: f64) -> Es
             run.end - run.start + 1,
             tol * 100.0
         ),
+        stat: Some(d),
         pvalues: Vec::new(),
     }
 }
