@@ -8,6 +8,7 @@
 pub mod betti;
 pub mod corrdim;
 pub mod fiedler;
+pub mod geom;
 pub mod io;
 pub mod rank;
 pub mod progress;

@@ -28,34 +28,23 @@
 use faer::linalg::solvers::SelfAdjointEigendecomposition;
 use faer::{Mat, Side};
 
+use crate::geom::Cloud;
 use crate::rank::Estimate;
-use crate::twonn::strided_rows;
 
 /// Bottom eigenvalues of the normalised Laplacian of the k-NN graph,
 /// ascending. Returns the whole spectrum; callers look at the first few.
-pub fn laplacian_spectrum(x: &Mat<f64>, max_points: usize, k: usize) -> Vec<f64> {
-    let rows = strided_rows(x.nrows(), max_points);
-    let m = rows.len();
-    if m < k + 2 {
+///
+/// `nbr` is the shared k-NN graph, `(d^2, index)` ascending, so the local
+/// scale sigma_i is just its last entry.
+pub fn laplacian_spectrum(c: &Cloud, nbr: &[Vec<(f64, usize)>]) -> Vec<f64> {
+    let m = c.len();
+    if nbr.len() != m || m < 3 {
         return Vec::new();
     }
-    let sub = Mat::from_fn(m, x.ncols(), |i, j| x.read(rows[i], j));
-    let gram = sub.as_ref() * sub.as_ref().transpose();
-    let diag: Vec<f64> = (0..m).map(|i| gram.read(i, i)).collect();
-    let d2 = |a: usize, b: usize| (diag[a] + diag[b] - 2.0 * gram.read(a, b)).max(0.0);
-
-    // k nearest neighbours of each point, and the local scale sigma_i.
-    let mut nbr = vec![Vec::with_capacity(k); m];
-    let mut sigma = vec![1.0f64; m];
-    let mut buf: Vec<(f64, usize)> = Vec::with_capacity(m);
-    for i in 0..m {
-        buf.clear();
-        buf.extend((0..m).filter(|&j| j != i).map(|j| (d2(i, j), j)));
-        // k-th smallest, without sorting all m.
-        buf.select_nth_unstable_by(k - 1, |a, b| a.0.total_cmp(&b.0));
-        sigma[i] = buf[k - 1].0.sqrt().max(1e-12);
-        nbr[i] = buf[..k].iter().map(|&(d, j)| (d, j)).collect();
-    }
+    let sigma: Vec<f64> = nbr
+        .iter()
+        .map(|n| n.last().expect("k >= 1").0.sqrt().max(1e-12))
+        .collect();
 
     // Symmetric self-tuning affinity: W = max(W, W^T), so a one-directional
     // neighbour still connects. Union rather than intersection -- the
@@ -175,6 +164,13 @@ pub fn fiedler(eigs: &[f64], max_patches: usize, min_ratio: f64) -> Estimate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faer::Mat;
+
+    /// One cloud, one k-NN graph, one spectrum -- the wiring `main` uses.
+    fn spectrum(x: &Mat<f64>, max_points: usize, k: usize) -> Vec<f64> {
+        let c = Cloud::new(x, max_points);
+        laplacian_spectrum(&c, &c.knn(k))
+    }
 
     fn lcg(seed: u64) -> impl FnMut() -> f64 {
         let mut s = seed;
@@ -193,7 +189,7 @@ mod tests {
             let blob = i % 3;
             (if j == blob { 100.0 } else { 0.0 }) + r()
         });
-        let eigs = laplacian_spectrum(&x, 600, 15);
+        let eigs = spectrum(&x, 600, 15);
         let est = fiedler(&eigs, 20, 5.0);
         assert!(eigs[1] < 1e-8, "lambda_1 = {:.3e}", eigs[1]);
         assert_eq!(est.rank, 3, "{}", est.detail);
@@ -214,7 +210,7 @@ mod tests {
                 _ => 0.05 * (t * j as f64).cos(),
             }
         });
-        let eigs = laplacian_spectrum(&x, 800, 15);
+        let eigs = spectrum(&x, 800, 15);
         let est = fiedler(&eigs, 20, 5.0);
         assert!(eigs[1] > 0.0 && eigs[1] < 1e-3, "lambda_1 = {:.3e}", eigs[1]);
         assert_eq!(est.rank, 1, "{}", est.detail);
@@ -227,7 +223,7 @@ mod tests {
     fn spectrum_is_normalised() {
         let mut r = lcg(5);
         let x = Mat::from_fn(400, 10, |_, _| r());
-        let eigs = laplacian_spectrum(&x, 400, 10);
+        let eigs = spectrum(&x, 400, 10);
         assert_eq!(fiedler(&eigs, 20, 5.0).rank, 1);
         assert!(eigs[0].abs() < 1e-9, "lambda_0 = {:.3e}", eigs[0]);
         assert!(eigs.windows(2).all(|w| w[1] >= w[0] - 1e-12));

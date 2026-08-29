@@ -34,23 +34,17 @@
 //! rather than a count of literal zero eigenvalues: the bridges make the
 //! components formally connected while leaving the step intact.
 
-use faer::Mat;
-
+use crate::geom::Cloud;
 use crate::rank::Estimate;
-use crate::twonn::strided_rows;
 
 /// Edge weights of the Euclidean MST, ascending. Equivalently the H_0 barcode:
 /// the i-th weight is the radius at which the (N-i)-th component dies.
-pub fn mst_weights(x: &Mat<f64>, max_points: usize) -> Vec<f64> {
-    let rows = strided_rows(x.nrows(), max_points);
-    let m = rows.len();
+pub fn mst_weights(c: &Cloud) -> Vec<f64> {
+    let m = c.len();
     if m < 3 {
         return Vec::new();
     }
-    let sub = Mat::from_fn(m, x.ncols(), |i, j| x.read(rows[i], j));
-    let gram = sub.as_ref() * sub.as_ref().transpose();
-    let diag: Vec<f64> = (0..m).map(|i| gram.read(i, i)).collect();
-    let dist = |a: usize, b: usize| (diag[a] + diag[b] - 2.0 * gram.read(a, b)).max(0.0).sqrt();
+    let dist = |a: usize, b: usize| c.dist(a, b);
 
     // Prim's, dense: no priority queue, because the graph is complete and the
     // O(m^2) scan is the same cost as reading the distances once.
@@ -139,6 +133,7 @@ pub fn patch_count(weights: &[f64], max_patches: usize, min_gap: f64) -> Estimat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faer::Mat;
 
     fn lcg(seed: u64) -> impl FnMut() -> f64 {
         let mut s = seed;
@@ -158,7 +153,7 @@ mod tests {
             let centre = if j == blob { 100.0 } else { 0.0 };
             centre + r()
         });
-        let w = mst_weights(&x, 600);
+        let w = mst_weights(&Cloud::new(&x, 600));
         let est = patch_count(&w, 20, 2.0);
         assert_eq!(est.rank, 3, "{}", est.detail);
     }
@@ -176,7 +171,7 @@ mod tests {
                 _ => 0.05 * (t * j as f64).cos(),
             }
         });
-        let est = patch_count(&mst_weights(&x, 800), 20, 2.0);
+        let est = patch_count(&mst_weights(&Cloud::new(&x, 800)), 20, 2.0);
         assert_eq!(est.rank, 1, "{}", est.detail);
         assert!(est.detail.starts_with("continuous"), "{}", est.detail);
     }
@@ -188,7 +183,7 @@ mod tests {
     fn calls_a_gaussian_blob_continuous() {
         let mut r = lcg(5);
         let x = Mat::from_fn(800, 10, |_, _| r() + r() + r() - 1.5);
-        let est = patch_count(&mst_weights(&x, 800), 20, 2.0);
+        let est = patch_count(&mst_weights(&Cloud::new(&x, 800)), 20, 2.0);
         assert_eq!(est.rank, 1, "{}", est.detail);
     }
 
@@ -198,7 +193,7 @@ mod tests {
     fn mst_is_well_formed() {
         let mut r = lcg(3);
         let x = Mat::from_fn(200, 5, |_, _| r());
-        let w = mst_weights(&x, 200);
+        let w = mst_weights(&Cloud::new(&x, 200));
         assert_eq!(w.len(), 199);
         assert!(w.windows(2).all(|p| p[1] >= p[0] && p[0] >= 0.0));
     }

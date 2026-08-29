@@ -39,13 +39,11 @@ pub struct Spectrum {
     /// damping rather than converging) while the resulting spectrum is
     /// perfectly good, so the flag alone is not evidence of anything.
     pub bulk_ks: f64,
-    /// The biwhitened, mean-centred matrix the spectrum came from.
-    pub whitened: Mat<f64>,
     /// PCA scores, n x min(SCORE_K, rank): the cells in the leading principal
     /// subspace, on the U*Sigma scale.
     ///
     /// The geometric heuristics (TwoNN, correlation dimension, Betti-0) must
-    /// run here rather than on `whitened`. In 2000 ambient dimensions pairwise
+    /// run here rather than in ambient gene space. In 2000 dimensions pairwise
     /// distances concentrate -- measured on Tabula Muris FACS, the longest MST
     /// edge is 1.2x the median and the largest single-linkage step is 1.01x,
     /// so 81 well-separated cell types are indistinguishable from a smooth
@@ -158,7 +156,6 @@ impl Spectrum {
             biwhitening_converged: converged,
             biwhitening_residual: residual,
             bulk_ks,
-            whitened: xc,
             scores,
         }
     }

@@ -26,10 +26,8 @@
 //! failing loudly -- so [`correlation_dimension`] reports the ceiling next to
 //! every estimate, and you should read the two together.
 
-use faer::Mat;
-
+use crate::geom::Cloud;
 use crate::rank::{longest_flat_run, Estimate};
-use crate::twonn::strided_rows;
 
 /// One point of the log C / log r curve.
 pub struct GpPoint {
@@ -43,17 +41,16 @@ pub struct GpPoint {
 
 /// Correlation integral and its local slope, over `bins` scales. Returns the
 /// curve and the number of points it was built from -- the caller needs that
-/// for the Eckmann-Ruelle ceiling, and it is not `max_points` (the stride
-/// through the rows rarely divides evenly).
+/// for the Eckmann-Ruelle ceiling, and it is not the cap the cloud was built
+/// with (the stride through the rows rarely divides evenly).
 ///
 /// Scales are chosen so that C is log-spaced from 1e-4 to 0.3: every slope
 /// estimate then rests on a comparable number of pairs, and none of them sit in
 /// the saturated region where C -> 1 and the slope collapses to zero by
 /// construction.
-pub fn correlation_curve(x: &Mat<f64>, max_points: usize, bins: usize) -> (Vec<GpPoint>, usize) {
-    let rows = strided_rows(x.nrows(), max_points);
-    let m = rows.len();
-    let mut d = pair_distances(x, &rows);
+pub fn correlation_curve(c: &Cloud, bins: usize) -> (Vec<GpPoint>, usize) {
+    let m = c.len();
+    let mut d = pair_distances(c);
     if d.len() < 100 {
         return (Vec::new(), m);
     }
@@ -136,16 +133,13 @@ pub fn correlation_dimension(curve: &[GpPoint], n_points: usize, tol: f64) -> Es
     }
 }
 
-/// All m(m-1)/2 pairwise distances, from the Gram matrix.
-fn pair_distances(x: &Mat<f64>, rows: &[usize]) -> Vec<f64> {
-    let m = rows.len();
-    let sub = Mat::from_fn(m, x.ncols(), |i, j| x.read(rows[i], j));
-    let gram = sub.as_ref() * sub.as_ref().transpose();
-    let diag: Vec<f64> = (0..m).map(|i| gram.read(i, i)).collect();
+/// All m(m-1)/2 pairwise distances.
+fn pair_distances(c: &Cloud) -> Vec<f64> {
+    let m = c.len();
     let mut out = Vec::with_capacity(m * (m - 1) / 2);
     for i in 0..m {
         for j in (i + 1)..m {
-            out.push((diag[i] + diag[j] - 2.0 * gram.read(i, j)).max(0.0).sqrt());
+            out.push(c.dist(i, j));
         }
     }
     out
@@ -154,6 +148,7 @@ fn pair_distances(x: &Mat<f64>, rows: &[usize]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faer::Mat;
 
     fn lcg(seed: u64) -> impl FnMut() -> f64 {
         let mut state = seed;
@@ -178,7 +173,7 @@ mod tests {
                 .map(|k| latent[i * intrinsic + k] * basis[k * ambient + j])
                 .sum()
         });
-        let (curve, m) = correlation_curve(&x, n, 20);
+        let (curve, m) = correlation_curve(&Cloud::new(&x, n), 20);
         let est = correlation_dimension(&curve, m, 0.15);
         assert_eq!(est.rank, intrinsic, "{}", est.detail);
     }
@@ -197,7 +192,7 @@ mod tests {
                 _ => 0.1 * (t * (j as f64)).sin(),
             }
         });
-        let (curve, m) = correlation_curve(&x, n, 20);
+        let (curve, m) = correlation_curve(&Cloud::new(&x, n), 20);
         let est = correlation_dimension(&curve, m, 0.15);
         assert_eq!(est.rank, 1, "{}", est.detail);
     }
@@ -207,7 +202,7 @@ mod tests {
     fn curve_is_monotone() {
         let mut r = lcg(7);
         let x = Mat::from_fn(500, 5, |_, _| r());
-        let (curve, _) = correlation_curve(&x, 500, 15);
+        let (curve, _) = correlation_curve(&Cloud::new(&x, 500), 15);
         assert!(curve.len() > 5);
         for w in curve.windows(2) {
             assert!(w[1].r >= w[0].r && w[1].c > w[0].c);

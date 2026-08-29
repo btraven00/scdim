@@ -16,10 +16,10 @@
 //! useful upper bound on how many UMAP/diffusion coordinates could possibly
 //! carry structure.
 
-use faer::Mat;
 use rayon::prelude::*;
 use statrs::distribution::{ContinuousCDF, Gamma};
 
+use crate::geom::Cloud;
 use crate::rank::Estimate;
 
 /// TwoNN MLE with the `intRinsic` trimming and confidence interval.
@@ -28,45 +28,27 @@ use crate::rank::Estimate;
 /// the reference). The trim matters: a single pair of near-duplicate cells
 /// produces a huge mu and drags the estimate down.
 ///
-/// `max_points` caps the O(m^2 p) exact neighbour search by taking a regular
-/// stride through the rows -- deterministic, and cells are not stored in a
-/// meaningful order anyway.
-pub fn two_nn(x: &Mat<f64>, c_trimmed: f64, max_points: usize, conf: f64) -> Estimate {
-    let mus = mu_ratios(x, max_points);
-    estimate_from_mus(mus, c_trimmed, conf)
+pub fn two_nn(c: &Cloud, c_trimmed: f64, conf: f64) -> Estimate {
+    let all: Vec<usize> = (0..c.len()).collect();
+    estimate_from_mus(neighbours(c, &all).0, c_trimmed, conf)
 }
 
-/// A regular stride through the rows, capped at `max_points`. Deterministic,
-/// and cells are not stored in a meaningful order anyway.
-pub(crate) fn strided_rows(n: usize, max_points: usize) -> Vec<usize> {
-    let stride = n.div_ceil(max_points.max(1)).max(1);
-    (0..n).step_by(stride).collect()
-}
-
-fn mu_ratios(x: &Mat<f64>, max_points: usize) -> Vec<f64> {
-    neighbours(x, &strided_rows(x.nrows(), max_points)).0
-}
-
-/// mu_i = r_2 / r_1 for each row in `rows`, plus the mean r_2 -- the length
+/// mu_i = r_2 / r_1 for each point in `idx`, plus the mean r_2 -- the length
 /// scale the estimate was taken at.
 ///
-/// Distances come from the Gram matrix (d^2 = G_ii + G_jj - 2 G_ij) so the
-/// whole thing is one BLAS-3 call instead of m^2 dot products.
-pub(crate) fn neighbours(x: &Mat<f64>, rows: &[usize]) -> (Vec<f64>, f64) {
-    let m = rows.len();
-    let sub = Mat::from_fn(m, x.ncols(), |i, j| x.read(rows[i], j));
-    let gram = sub.as_ref() * sub.as_ref().transpose();
-    let diag: Vec<f64> = (0..m).map(|i| gram.read(i, i)).collect();
-
-    let pairs: Vec<(f64, f64)> = (0..m)
-        .into_par_iter()
-        .filter_map(|i| {
+/// `idx` selects a subset of the cloud, which is what the scale analysis
+/// decimates over; distances are read out of the cloud's Gram matrix rather
+/// than recomputed per level.
+pub(crate) fn neighbours(c: &Cloud, idx: &[usize]) -> (Vec<f64>, f64) {
+    let pairs: Vec<(f64, f64)> = idx
+        .par_iter()
+        .filter_map(|&i| {
             let (mut r1, mut r2) = (f64::INFINITY, f64::INFINITY);
-            for j in 0..m {
+            for &j in idx {
                 if j == i {
                     continue;
                 }
-                let d2 = (diag[i] + diag[j] - 2.0 * gram.read(i, j)).max(0.0);
+                let d2 = c.d2(i, j);
                 if d2 < r1 {
                     r2 = r1;
                     r1 = d2;
@@ -154,12 +136,12 @@ const MIN_PLATEAU_LEVELS: usize = 3;
 /// "The relevant ID of the dataset can be obtained by finding a range of N for
 /// which d_hat(N) is constant, and thus a plateau in the graph of d_hat(N)."
 ///
-/// Levels run from `max_points` down by halving until `MIN_POINTS`. `reps`
+/// Levels run from the full cloud down by halving until `MIN_POINTS`. `reps`
 /// random subsamples are drawn per level (the top level has only one, so it is
 /// drawn once whatever `reps` says). Cost is about 2x a single TwoNN fit: the
 /// halved levels are quadratically cheaper and the series converges.
-pub fn scale_analysis(x: &Mat<f64>, max_points: usize, reps: usize, c_trimmed: f64) -> Vec<ScalePoint> {
-    let base = strided_rows(x.nrows(), max_points);
+pub fn scale_analysis(c: &Cloud, reps: usize, c_trimmed: f64) -> Vec<ScalePoint> {
+    let base: Vec<usize> = (0..c.len()).collect();
     let mut out = Vec::new();
     let mut m = base.len();
     let mut level = 0u64;
@@ -171,7 +153,7 @@ pub fn scale_analysis(x: &Mat<f64>, max_points: usize, reps: usize, c_trimmed: f
             // Deterministic per (level, rep): a diagnostic you cannot rerun is
             // not a diagnostic.
             let rows = sample(&base, m, level << 32 | rep as u64);
-            let (mus, mean_r2) = neighbours(x, &rows);
+            let (mus, mean_r2) = neighbours(c, &rows);
             if let Some(d) = fit(mus, c_trimmed) {
                 ds.push(d);
                 r2s.push(mean_r2);
@@ -210,22 +192,30 @@ pub fn scale_analysis(x: &Mat<f64>, max_points: usize, reps: usize, c_trimmed: f
 /// ponytail: Facco reads the plateau off the plot by eye, and the printed table
 /// is still the real deliverable. This is a convenience, not a replacement.
 pub fn plateau(points: &[ScalePoint], tol: f64) -> Estimate {
-    let ds: Vec<f64> = points.iter().map(|p| p.d).collect();
-    let best = crate::rank::longest_flat_run(&ds, tol);
-    let run = &points[best.start..=best.end.min(points.len().saturating_sub(1))];
-    if run.len() < MIN_PLATEAU_LEVELS {
-        let (hi, lo) = (points.first(), points.last());
+    if points.len() < MIN_PLATEAU_LEVELS {
         return Estimate {
             name: "twonn-plateau",
             rank: 0,
-            detail: match (hi, lo) {
-                (Some(h), Some(l)) => format!(
-                    "no plateau: d drifts {:.1} -> {:.1} from N={} to N={}, no {MIN_PLATEAU_LEVELS} \
-                     consecutive levels within {:.0}% -- read the table, not this row",
-                    h.d, l.d, h.n, l.n, tol * 100.0
-                ),
-                _ => "no plateau: not enough decimation levels".to_string(),
-            },
+            detail: format!(
+                "no plateau: {} decimation levels, need {MIN_PLATEAU_LEVELS}",
+                points.len()
+            ),
+            pvalues: Vec::new(),
+        };
+    }
+    let ds: Vec<f64> = points.iter().map(|p| p.d).collect();
+    let best = crate::rank::longest_flat_run(&ds, tol);
+    let run = &points[best.start..=best.end];
+    if run.len() < MIN_PLATEAU_LEVELS {
+        let (h, l) = (&points[0], points.last().unwrap());
+        return Estimate {
+            name: "twonn-plateau",
+            rank: 0,
+            detail: format!(
+                "no plateau: d drifts {:.1} -> {:.1} from N={} to N={}, no {MIN_PLATEAU_LEVELS} \
+                 consecutive levels within {:.0}% -- read the table, not this row",
+                h.d, l.d, h.n, l.n, tol * 100.0
+            ),
             pvalues: Vec::new(),
         };
     }
@@ -279,6 +269,7 @@ fn sample(pool: &[usize], k: usize, seed: u64) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faer::Mat;
 
     /// Exact Pareto(1, d) ratios must return d. This checks the estimator
     /// itself, with the geometry taken out of the picture: the inverse CDF of
@@ -317,7 +308,7 @@ mod tests {
                 .map(|k| latent[i * intrinsic + k] * basis[k * ambient + j])
                 .sum()
         });
-        let est = two_nn(&x, 0.01, 2000, 0.95);
+        let est = two_nn(&Cloud::new(&x, 2000), 0.01, 0.95);
         assert_eq!(est.rank, intrinsic, "{}", est.detail);
     }
 
@@ -328,7 +319,7 @@ mod tests {
     fn plateau_is_flat_on_a_clean_manifold() {
         let (n, ambient, intrinsic) = (1600, 20, 3);
         let x = embedded_uniform(n, ambient, intrinsic, 0.0, 999);
-        let pts = scale_analysis(&x, 1600, 3, 0.01);
+        let pts = scale_analysis(&Cloud::new(&x, 1600), 3, 0.01);
         assert!(pts.len() >= 4, "only {} levels", pts.len());
         for p in &pts {
             assert!((p.d - 3.0).abs() < 0.6, "N={} gave d={:.2}", p.n, p.d);
@@ -343,10 +334,17 @@ mod tests {
     fn decimation_deflates_a_noise_inflated_estimate() {
         let (n, ambient, intrinsic) = (1600, 20, 3);
         let x = embedded_uniform(n, ambient, intrinsic, 0.02, 4242);
-        let pts = scale_analysis(&x, 1600, 3, 0.01);
+        let pts = scale_analysis(&Cloud::new(&x, 1600), 3, 0.01);
         let (first, last) = (pts[0].d, pts.last().unwrap().d);
         assert!(first > 3.5, "noise did not inflate the estimate: {first:.2}");
         assert!(last < first, "decimation did not deflate: {first:.2} -> {last:.2}");
+    }
+
+    /// Too few points to decimate is not a plateau, and must not be a panic:
+    /// a file with under 50 cells reaches here with an empty level list.
+    #[test]
+    fn too_few_levels_is_not_a_plateau() {
+        assert_eq!(plateau(&[], 0.10).rank, 0);
     }
 
     /// Uniform points on an `intrinsic`-dimensional linear subspace of

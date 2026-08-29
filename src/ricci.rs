@@ -28,16 +28,14 @@
 //!
 //! ## Ground metric
 //!
-//! Euclidean distance in the embedding, not graph shortest-path distance.
-//! Shortest paths would need an all-pairs solve on the k-NN graph per edge;
-//! the cells already live in a metric space, so the ambient distance is both
-//! cheaper and better behaved than a hop count.
+//! The discrete geodesic: shortest path through the k-NN graph with Euclidean
+//! edge weights. It is the one choice here that changes the *sign* of the
+//! answer, so see [`Metric`] for what the alternatives get wrong.
 
-use faer::Mat;
 use rayon::prelude::*;
 
+use crate::geom::Cloud;
 use crate::rank::Estimate;
-use crate::twonn::strided_rows;
 
 /// Ground metric for the transport problem. The choice is not cosmetic: it
 /// changes the sign of the answer, so all three are exposed.
@@ -69,33 +67,24 @@ pub enum Metric {
 /// Per-cell curvature: the mean Ollivier-Ricci curvature of the edges at each
 /// node. `alpha` is the laziness of the random walk (0.5 is the usual choice).
 pub fn node_curvature(
-    x: &Mat<f64>,
-    max_points: usize,
-    k: usize,
+    c: &Cloud,
+    nbr: &[Vec<(f64, usize)>],
     alpha: f64,
     metric: Metric,
 ) -> Vec<f64> {
-    let rows = strided_rows(x.nrows(), max_points);
-    let m = rows.len();
-    if m < k + 2 {
+    let m = c.len();
+    if nbr.len() != m || m < 3 {
         return Vec::new();
     }
-    let sub = Mat::from_fn(m, x.ncols(), |i, j| x.read(rows[i], j));
-    let gram = sub.as_ref() * sub.as_ref().transpose();
-    let diag: Vec<f64> = (0..m).map(|i| gram.read(i, i)).collect();
-    let euclid = |a: usize, b: usize| (diag[a] + diag[b] - 2.0 * gram.read(a, b)).max(0.0).sqrt();
+    let euclid = |a: usize, b: usize| c.dist(a, b);
 
-    let mut knn: Vec<Vec<usize>> = Vec::with_capacity(m);
-    let mut buf: Vec<(f64, usize)> = Vec::with_capacity(m);
-    for i in 0..m {
-        buf.clear();
-        buf.extend((0..m).filter(|&j| j != i).map(|j| (euclid(i, j), j)));
-        buf.select_nth_unstable_by(k - 1, |a, b| a.0.total_cmp(&b.0));
-        knn.push(buf[..k].iter().map(|&(_, j)| j).collect());
-    }
     // The measure has to live on the *symmetrised* neighbourhood: k-NN is
     // directed, and a hub picked by many points but picking few has a much
     // larger true degree than k.
+    let knn: Vec<Vec<usize>> = nbr
+        .iter()
+        .map(|n| n.iter().map(|&(_, j)| j).collect())
+        .collect();
     let adj = symmetrise(&knn);
 
     let (edges, kappas) = match metric {
@@ -443,6 +432,13 @@ pub fn curvature_summary(kappa: &[f64], cut: f64) -> Estimate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faer::Mat;
+
+    /// One cloud, one k-NN graph, one curvature vector -- `main`'s wiring.
+    fn curvature(x: &Mat<f64>, max_points: usize, k: usize, alpha: f64, m: Metric) -> Vec<f64> {
+        let c = Cloud::new(x, max_points);
+        node_curvature(&c, &c.knn(k), alpha, m)
+    }
 
     /// The transport solver, against costs that can be worked out by hand.
     #[test]
@@ -552,7 +548,7 @@ mod tests {
 
         let mut r = lcg(4);
         let flat = Mat::from_fn(600, 4, |_, _| r() + r() + r());
-        let flat_k = node_curvature(&flat, 600, 12, 0.5, Metric::Geodesic);
+        let flat_k = curvature(&flat, 600, 12, 0.5, Metric::Geodesic);
         let flat_s = curvature_summary(&flat_k, 3.5);
 
         let mut r = lcg(9);
@@ -567,7 +563,7 @@ mod tests {
                 if j == 0 { 1.0 + 28.0 * t } else { 0.5 + 0.02 * r() }
             }
         });
-        let br_k = node_curvature(&bridged, n, 10, 0.5, Metric::Geodesic);
+        let br_k = curvature(&bridged, n, 10, 0.5, Metric::Geodesic);
         let br_s = curvature_summary(&br_k, 3.5);
 
         assert!(
@@ -589,7 +585,7 @@ mod tests {
         let mut r = lcg(4);
         let x = Mat::from_fn(400, 4, |_, _| r() + r() + r());
         let mean = |mt| {
-            let k = node_curvature(&x, 400, 12, 0.5, mt);
+            let k = curvature(&x, 400, 12, 0.5, mt);
             k.iter().sum::<f64>() / k.len() as f64
         };
         let geo = mean(Metric::Geodesic);
@@ -623,7 +619,7 @@ mod tests {
                 if j == 0 { 1.0 + 28.0 * t } else { 0.5 + 0.02 * r() }
             }
         });
-        let k = node_curvature(&x, n, 10, 0.5, Metric::Geodesic);
+        let k = curvature(&x, n, 10, 0.5, Metric::Geodesic);
         let bridge: f64 = k[2 * blob..].iter().sum::<f64>() / span as f64;
         let inside: f64 = k[..blob].iter().sum::<f64>() / blob as f64;
         assert!(bridge < 0.0, "bridge mean kappa {bridge:+.3} not negative");
@@ -632,7 +628,7 @@ mod tests {
             "bridge {bridge:+.3} not below blob interior {inside:+.3}"
         );
 
-        let hop = node_curvature(&x, n, 10, 0.5, Metric::Hops);
+        let hop = curvature(&x, n, 10, 0.5, Metric::Hops);
         let hop_bridge: f64 = hop[2 * blob..].iter().sum::<f64>() / span as f64;
         let hop_inside: f64 = hop[..blob].iter().sum::<f64>() / blob as f64;
         assert!(

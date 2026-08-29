@@ -1,6 +1,8 @@
+use std::time::Instant;
+
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use scdim::{betti, corrdim, fiedler, io, progress::Progress, rank, ricci, twonn};
+use scdim::{betti, corrdim, fiedler, geom, io, progress::Progress, rank, ricci, twonn};
 
 #[derive(Parser)]
 #[command(about = "Estimate the number of signal components in a single-cell matrix")]
@@ -36,9 +38,11 @@ struct Args {
     /// clock. Raise it if bulk-KS looks bad.
     #[arg(long, default_value_t = 150)]
     bw_max_iter: usize,
-    /// Cells used for the TwoNN neighbour search (O(m^2 g), so capped).
-    #[arg(long, default_value_t = 2000)]
-    twonn_cells: usize,
+    /// Cells used by every geometric diagnostic -- TwoNN, correlation
+    /// dimension, MST, Laplacian and Ricci all share one point cloud, and all
+    /// are O(m^2) or worse, so it is capped.
+    #[arg(long, alias = "twonn-cells", default_value_t = 2000)]
+    geom_cells: usize,
     /// Top fraction of TwoNN distance ratios dropped before fitting.
     /// Near-duplicate cells produce huge ratios; this is what removes them.
     #[arg(long, default_value_t = 0.01)]
@@ -115,6 +119,13 @@ const MIN_EIGENGAP: f64 = 5.0;
 /// Laziness of the Ollivier-Ricci random walk: mass kept at the centre.
 const RICCI_ALPHA: f64 = 0.5;
 
+/// Run `f`, returning what it returned and how long it took. The parallel
+/// stages cannot share the progress bar's single step clock.
+fn timed<T>(f: impl FnOnce() -> T) -> (T, f64) {
+    let t = Instant::now();
+    (f(), t.elapsed().as_secs_f64())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let mut pr = Progress::new(!args.quiet);
@@ -148,38 +159,55 @@ fn main() -> Result<()> {
     let embed = spec.scores.as_ref().subcols(0, embed_k).to_owned();
     pr.ok("tracy-widom test", &format!("rank {}, embedding {embed_k}D", tw.rank));
 
-    pr.begin("minimum spanning tree");
-    let mst = betti::mst_weights(&embed, args.twonn_cells);
-    pr.ok("minimum spanning tree", &format!("{} edges", mst.len()));
-
-    pr.begin("laplacian spectrum");
-    let lap = fiedler::laplacian_spectrum(&embed, args.twonn_cells, args.knn);
-    pr.ok("laplacian spectrum", &format!("k-NN k={}", args.knn));
-
-    pr.begin("ollivier-ricci curvature");
-    let kappa = ricci::node_curvature(&embed, args.twonn_cells, args.knn, RICCI_ALPHA, args.ricci_metric.into());
+    pr.begin("point cloud + k-NN graph");
+    let cloud = geom::Cloud::new(&embed, args.geom_cells);
+    let knn = cloud.knn(args.knn);
     pr.ok(
-        "ollivier-ricci curvature",
-        &format!("{} cells, {:?} metric", kappa.len(), args.ricci_metric),
+        "point cloud + k-NN graph",
+        &format!("{} cells, k={}", cloud.len(), args.knn),
     );
 
-    pr.begin("correlation integral");
-    let (gp, gp_n) = corrdim::correlation_curve(&embed, args.twonn_cells, 20);
-    pr.ok("correlation integral", &format!("{gp_n} points"));
-
-    pr.begin("twonn scale analysis");
-    let scale = twonn::scale_analysis(
-        &embed,
-        args.twonn_cells,
-        args.twonn_reps,
-        args.twonn_trim,
+    // The geometric diagnostics share the cloud read-only and do not talk
+    // to each other, so they run concurrently. Each is internally parallel
+    // too; rayon's work stealing sorts that out. Their reported times overlap.
+    pr.begin("geometry (6 diagnostics, in parallel)");
+    let mut mst = Default::default();
+    let mut lap = Default::default();
+    let mut kappa = Default::default();
+    let mut gp = Default::default();
+    let mut nn: (Option<rank::Estimate>, f64) = Default::default();
+    let mut scale = Default::default();
+    rayon::scope(|s| {
+        s.spawn(|_| mst = timed(|| betti::mst_weights(&cloud)));
+        s.spawn(|_| lap = timed(|| fiedler::laplacian_spectrum(&cloud, &knn)));
+        s.spawn(|_| {
+            kappa = timed(|| {
+                ricci::node_curvature(&cloud, &knn, RICCI_ALPHA, args.ricci_metric.into())
+            })
+        });
+        s.spawn(|_| gp = timed(|| corrdim::correlation_curve(&cloud, 20)));
+        s.spawn(|_| nn = timed(|| Some(twonn::two_nn(&cloud, args.twonn_trim, 0.95))));
+        s.spawn(|_| {
+            scale = timed(|| twonn::scale_analysis(&cloud, args.twonn_reps, args.twonn_trim))
+        });
+    });
+    pr.stage("  minimum spanning tree", mst.1, &format!("{} edges", mst.0.len()));
+    pr.stage("  laplacian spectrum", lap.1, &format!("{} eigenvalues", lap.0.len()));
+    pr.stage(
+        "  ollivier-ricci curvature",
+        kappa.1,
+        &format!("{} cells, {:?} metric", kappa.0.len(), args.ricci_metric),
     );
-    pr.ok("twonn scale analysis", &format!("{} levels", scale.len()));
+    pr.stage("  correlation integral", gp.1, &format!("{} points", gp.0 .1));
+    pr.stage("  twonn scale analysis", scale.1, &format!("{} levels", scale.0.len()));
+    pr.stage("  twonn fit", nn.1, &format!("d = {}", nn.0.as_ref().expect("spawned").rank));
+    let (mst, lap, kappa, (gp, gp_n), scale) = (mst.0, lap.0, kappa.0, gp.0, scale.0);
     pr.finish();
+
     let estimates = [
         tw,
         rank::mp_edge(&spec),
-        twonn::two_nn(&embed, args.twonn_trim, args.twonn_cells, 0.95),
+        nn.0.expect("spawned"),
         twonn::plateau(&scale, PLATEAU_TOL),
         corrdim::correlation_dimension(&gp, gp_n, GP_TOL),
         betti::patch_count(&mst, MAX_PATCHES, MIN_MST_GAP),

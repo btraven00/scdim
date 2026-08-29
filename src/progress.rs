@@ -56,10 +56,16 @@ impl Progress {
 
     /// Close the current stage, reporting how long it took and a short note.
     pub fn ok(&mut self, label: &str, note: &str) {
+        self.stage(label, self.step.elapsed().as_secs_f64(), note);
+    }
+
+    /// Report a stage whose duration was measured elsewhere. Stages that ran
+    /// concurrently cannot share the single step clock, and their times
+    /// overlap rather than summing to the total.
+    pub fn stage(&mut self, label: &str, secs: f64, note: &str) {
         if !self.open {
             return;
         }
-        let secs = self.step.elapsed().as_secs_f64();
         let line = format!(
             "  {} {:<26} {:>7}  {}",
             self.paint("32", "v"),
