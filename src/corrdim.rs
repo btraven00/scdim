@@ -84,12 +84,15 @@ pub fn correlation_curve(c: &Cloud, bins: usize) -> (Vec<GpPoint>, usize) {
 /// Eckmann-Ruelle ceiling reported alongside the estimate.
 pub fn correlation_dimension(curve: &[GpPoint], n_points: usize, tol: f64) -> Estimate {
     let ceiling = 2.0 * (n_points as f64).log10();
-    let slopes: Vec<f64> = curve
-        .iter()
-        .map(|p| p.slope)
-        .filter(|s| s.is_finite())
-        .collect();
-    if slopes.len() < 3 {
+    // NaNs stay in. `longest_flat_run` breaks on them (every comparison against
+    // a NaN is false), which is the point: a collapsed bin -- two scales landing
+    // on the same distance, so d log r = 0 and the slope is undefined -- is a
+    // hole in the curve, not a join. Filtering them out first spliced the two
+    // sides together and reported one long scaling range where there were two
+    // short ones. Rare at 2000 points, routine at a few hundred.
+    let slopes: Vec<f64> = curve.iter().map(|p| p.slope).collect();
+    let finite = |s: &&f64| s.is_finite();
+    if slopes.iter().filter(finite).count() < 3 {
         return Estimate {
             name: "corr-dim",
             rank: 0,
@@ -106,8 +109,8 @@ pub fn correlation_dimension(curve: &[GpPoint], n_points: usize, tol: f64) -> Es
             detail: format!(
                 "no scaling range: local slope runs {:.1} -> {:.1} with no 3 consecutive \
                  scales within {:.0}% -- read the table, not this row (ceiling {ceiling:.1})",
-                slopes[0],
-                slopes[slopes.len() - 1],
+                slopes.iter().copied().find(|s| s.is_finite()).unwrap_or(f64::NAN),
+                slopes.iter().rev().copied().find(|s| s.is_finite()).unwrap_or(f64::NAN),
                 tol * 100.0
             ),
             stat: None,
@@ -198,6 +201,26 @@ mod tests {
         let (curve, m) = correlation_curve(&Cloud::new(&x, n), 20);
         let est = correlation_dimension(&curve, m, 0.15);
         assert_eq!(est.rank, 1, "{}", est.detail);
+    }
+
+    /// A hole in the curve must not be bridged. Two flat stretches either side
+    /// of an undefined slope are two scaling ranges, not one twice as long --
+    /// and the estimator used to report the latter because it compacted the
+    /// NaNs away before looking for a run.
+    #[test]
+    fn a_gap_does_not_join_two_runs() {
+        let pt = |slope| GpPoint { r: 1.0, c: 0.5, slope };
+        let curve: Vec<GpPoint> = [3.0, 3.0, 3.0, f64::NAN, 3.0, 3.0, 3.0]
+            .into_iter()
+            .map(pt)
+            .collect();
+        let est = correlation_dimension(&curve, 2000, 0.15);
+        assert_eq!(est.rank, 3, "{}", est.detail);
+        assert!(
+            est.detail.contains("over 3 scales"),
+            "bridged the gap: {}",
+            est.detail
+        );
     }
 
     /// The correlation integral must be monotone in r and land in (0, 1].

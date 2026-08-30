@@ -126,6 +126,67 @@ fn timed<T>(f: impl FnOnce() -> T) -> (T, f64) {
     (f(), t.elapsed().as_secs_f64())
 }
 
+/// Peak bytes the geometry block needs per pair of cells.
+///
+/// Everything downstream of the cloud is O(m^2) and several of them are live at
+/// once: the Gram matrix (8), the geodesic distances (4), every pairwise
+/// distance sorted for the correlation integral (4), and the Laplacian's W, L
+/// and eigensolver workspace (8 each). Measured rather than added up -- an
+/// 8000-cell cloud peaked at 7.0 GB, which is 110 bytes per pair.
+const GEOM_BYTES_PER_PAIR: usize = 110;
+
+/// What the OS says is available, if it will say. Linux only; everywhere else
+/// this returns None and the check below declines to have an opinion.
+fn available_bytes() -> Option<usize> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    Some(line.split_whitespace().nth(1)?.parse::<usize>().ok()? * 1024)
+}
+
+/// Refuse a cloud that will not fit before spending a minute discovering it.
+///
+/// The geometry block grows quadratically and has no natural cap, so
+/// `--geom-cells 20000` is a 44 GB request that looks like a one-word change to
+/// `--geom-cells 2000`. Being OOM-killed forty minutes into a run, after the
+/// reading and biwhitening that dominate the wall clock, is the outcome worth
+/// spending ten lines to avoid.
+fn check_geometry_memory(m: usize) -> Result<()> {
+    let need = m.saturating_mul(m).saturating_mul(GEOM_BYTES_PER_PAIR);
+    let gb = |b: usize| b as f64 / 1e9;
+    match available_bytes() {
+        // Leave a fifth of what is free for everything else on the machine.
+        Some(avail) if need > avail * 4 / 5 => anyhow::bail!(
+            "a {m}-cell geometry cloud needs about {:.1} GB and only {:.1} GB is available. \
+             Every geometric diagnostic is O(m^2) or worse. Lower --geom-cells (it is capped \
+             at {m} here by --max-cells; the cost falls as the square, so halving it is a 4x \
+             saving).",
+            gb(need),
+            gb(avail)
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// A JSON number, or `null` when the value is not one.
+///
+/// `NaN` and `Infinity` are not JSON, and `format!` will happily print them --
+/// one non-finite value anywhere makes the whole line unparseable, silently,
+/// in the output mode whose entire purpose is being piped into something else.
+/// `slope` was already special-cased here; everything else was not.
+fn num(x: f64, digits: usize) -> String {
+    if x.is_finite() {
+        format!("{x:.digits$}")
+    } else {
+        "null".to_string()
+    }
+}
+
+/// Escape a string for a JSON string literal. Paths are user input and may
+/// contain either character.
+fn jstr(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let mut pr = Progress::new(!args.quiet);
@@ -160,6 +221,12 @@ fn main() -> Result<()> {
     pr.ok("tracy-widom test", &format!("rank {}, embedding {embed_k}D", tw.rank));
 
     pr.begin("point cloud + k-NN graph");
+    // Cloud::new strides by an integer, so the reachable sizes are n, n/2,
+    // n/3 ... -- asking for 6000 out of 8000 rows gives 4000. Compute the size
+    // the same way the constructor will, so the estimate is not a fiction.
+    let stride = embed.nrows().div_ceil(args.geom_cells.max(1)).max(1);
+    let m = embed.nrows().div_ceil(stride);
+    check_geometry_memory(m)?;
     let cloud = geom::Cloud::new(&embed, args.geom_cells);
     let knn = cloud.knn(args.knn);
     pr.ok(
@@ -224,7 +291,7 @@ fn main() -> Result<()> {
         Format::Txt => {
             println!(
                 "{}  {}x{} of {}x{}  q={:.4}  density={:.1}%  embed={}D  sigma2={:.4}  bulk-KS={:.4}",
-                args.path,
+                jstr(&args.path),
                 spec.n,
                 spec.p,
                 counts.source_shape.0,
@@ -285,16 +352,23 @@ fn main() -> Result<()> {
             let ranks: Vec<String> = estimates
                 .iter()
                 .map(|e| {
-                    let pv: Vec<String> =
-                        e.pvalues.iter().map(|p| format!("{p:.6e}")).collect();
+                    let pv: Vec<String> = e
+                        .pvalues
+                        .iter()
+                        .map(|p| {
+                            if p.is_finite() {
+                                format!("{p:.6e}")
+                            } else {
+                                "null".to_string()
+                            }
+                        })
+                        .collect();
                     format!(
                         r#"{{"name":"{}","rank":{},"stat":{},"detail":"{}","pvalues":[{}]}}"#,
                         e.name,
                         e.rank,
-                        e.stat
-                            .filter(|v| v.is_finite())
-                            .map_or("null".to_string(), |v| format!("{v:.6}")),
-                        e.detail.replace('"', "'"),
+                        e.stat.map_or("null".to_string(), |v| num(v, 6)),
+                        jstr(&e.detail),
                         pv.join(",")
                     )
                 })
@@ -302,45 +376,51 @@ fn main() -> Result<()> {
             let head = spec.eigenvalues.iter().take(50);
             println!(
                 r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}],"local_pca":[{}]}}"#,
-                args.path,
+                jstr(&args.path),
                 spec.n,
                 spec.p,
                 counts.source_shape.0,
                 counts.source_shape.1,
-                spec.q,
+                num(spec.q, 8),
                 counts.nnz,
                 embed_k,
-                spec.sigma_sq,
-                spec.bulk_ks,
+                num(spec.sigma_sq, 8),
+                num(spec.bulk_ks, 8),
                 spec.biwhitening_converged,
-                spec.biwhitening_residual,
+                num(spec.biwhitening_residual, 8),
                 ranks.join(","),
-                head.map(|e| format!("{e:.6}")).collect::<Vec<_>>().join(","),
-                lap.iter()
-                    .take(40)
-                    .map(|e| format!("{e:.8}"))
-                    .collect::<Vec<_>>()
-                    .join(","),
-                kappa.iter().map(|k| format!("{k:.6}")).collect::<Vec<_>>().join(","),
+                head.map(|e| num(*e, 6)).collect::<Vec<_>>().join(","),
+                lap.iter().take(40).map(|e| num(*e, 8)).collect::<Vec<_>>().join(","),
+                kappa.iter().map(|k| num(*k, 6)).collect::<Vec<_>>().join(","),
                                 gp.iter()
                     .map(|p| format!(
-                        r#"{{"r":{:.6},"c":{:.8},"slope":{:.6}}}"#,
-                        p.r, p.c, if p.slope.is_finite() { p.slope } else { 0.0 }
+                        r#"{{"r":{},"c":{},"slope":{}}}"#,
+                        num(p.r, 6),
+                        num(p.c, 8),
+                        num(p.slope, 6)
                     ))
                     .collect::<Vec<_>>()
                     .join(","),
                 scale
                     .iter()
                     .map(|p| format!(
-                        r#"{{"n":{},"mean_r2":{:.6},"d":{:.6},"spread":[{:.6},{:.6}]}}"#,
-                        p.n, p.mean_r2, p.d, p.spread.0, p.spread.1
+                        r#"{{"n":{},"mean_r2":{},"d":{},"spread":[{},{}]}}"#,
+                        p.n,
+                        num(p.mean_r2, 6),
+                        num(p.d, 6),
+                        num(p.spread.0, 6),
+                        num(p.spread.1, 6)
                     ))
                     .collect::<Vec<_>>()
                     .join(","),
                 lpca.iter()
                     .map(|p| format!(
-                        r#"{{"k":{},"mean_r":{:.6},"d":{:.6},"ceiling":{},"centres":{}}}"#,
-                        p.k, p.mean_r, p.d, p.ceiling, p.centres
+                        r#"{{"k":{},"mean_r":{},"d":{},"ceiling":{},"centres":{}}}"#,
+                        p.k,
+                        num(p.mean_r, 6),
+                        num(p.d, 6),
+                        p.ceiling,
+                        p.centres
                     ))
                     .collect::<Vec<_>>()
                     .join(",")

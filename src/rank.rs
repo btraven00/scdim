@@ -126,15 +126,22 @@ impl Spectrum {
             })
         };
 
-        // sigma^2 by median-matching the bulk against MP: robust to the
-        // outliers we are about to count, unlike a trace-based estimate.
+        // sigma^2 by median-matching against MP. No attempt is made to exclude
+        // the signal eigenvalues first, and none is needed: the median of 2000
+        // eigenvalues does not notice the ~80 at the top, which is the whole
+        // reason for preferring it to a trace-based estimate.
+        //
+        // There used to be an upper bound here, `e <= lambda_plus * lambda_1`,
+        // which read as if it excluded them. It never excluded anything --
+        // lambda_plus >= 1 and lambda_1 is the largest eigenvalue, so the bound
+        // holds for every e by construction. Deleted rather than repaired,
+        // because the estimator is right as it stands and the line was only
+        // ever describing something it did not do.
+        //
+        // The lower bound is real: mean-centring costs a degree of freedom, so
+        // when n <= p one eigenvalue sits at ~0 and would drag the median down.
         let theory = RmtTheory { q };
-        let lp = theory.lambda_plus();
-        let mut bulk: Vec<f64> = eigenvalues
-            .iter()
-            .copied()
-            .filter(|&e| e > 1e-3 && e <= lp * eigenvalues[0].max(1.0))
-            .collect();
+        let mut bulk: Vec<f64> = eigenvalues.iter().copied().filter(|&e| e > 1e-3).collect();
         bulk.sort_by(f64::total_cmp);
         let sigma_sq = if bulk.is_empty() {
             1.0

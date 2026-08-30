@@ -484,9 +484,32 @@ asks the same question — is there mass on the left with nothing matching on th
 right — on percentiles that always exist, bounded in [−1, 1] and free of any
 scale. Negative is the direction bottlenecks live in. Measured, it drifts 15–25%
 across a 4× cloud against only ~1.5× separation between datasets, so it ranks
-weakly; and all three datasets come out *positive*, i.e. right-tailed, i.e. no
-bottleneck structure at all. The single-MAD cut behind the integer is still
-unfixed — kappa is left-skewed and Iglewicz-Hoaglin assumes symmetry.
+weakly; and all three datasets come out *positive*, i.e. right-tailed.
+
+### The single MAD is not the problem — measured
+
+The obvious suspicion about the integer is that Iglewicz-Hoaglin assumes a
+symmetric distribution while kappa is bounded above by 1 and should be
+left-skewed, so one pooled MAD would be inflated by the left shoulder and mask
+the very cells being counted. That was checked directly rather than assumed, and
+it is wrong on both halves:
+
+| dataset | median | MAD | MAD left | MAD right | skew | low / high | double-MAD low / high |
+|---|---|---|---|---|---|---|---|
+| Norman 2019 | −0.0711 | 0.0531 | 0.0499 | 0.0572 | +0.192 | 0 / 11 | 0 / 9 |
+| zheng2017 | −0.0201 | 0.0737 | 0.0656 | 0.0833 | +0.186 | 0 / 0 | 0 / 0 |
+| seurat pbmc | −0.0116 | 0.0601 | 0.0564 | 0.0623 | +0.121 | 0 / 22 | 1 / 21 |
+
+`MAD left < MAD right` on all three: these distributions are *right*-wider, which
+the quantile skew says independently. And splitting the MAD moves the counts by
+one cell across three datasets.
+
+So the zero is real. `ricci-neg` reports no bottleneck cells on these three
+because there are none — all three are datasets `betti0` and `fiedler` also call
+one continuous piece, and one of them is Perturb-seq on a single cell line. The
+row does fire where the structure exists: tm-facs, 81 cell types, gives 6 cells
+beyond −3.5 with an asymmetry of 6.00 in the table above. Nothing to fix; the
+double MAD was implemented as a measurement and not kept.
 
 ### Implementation notes
 
