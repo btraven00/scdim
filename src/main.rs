@@ -62,9 +62,17 @@ struct Args {
     ricci_metric: MetricArg,
     /// Robust-z cut defining "extreme" curvature, in Iglewicz-Hoaglin units of
     /// the data's own kappa distribution. Scale-free: independent of k, alpha
-    /// and local density, so it transfers across datasets. 3.5 is the usual
-    /// outlier threshold; lower it to widen the net.
-    #[arg(long, default_value_t = 3.5)]
+    /// and local density, so it transfers across datasets.
+    ///
+    /// 2.5, not Iglewicz-Hoaglin's conventional 3.5. That 3.5 answers "which
+    /// cells are outliers"; this row asks "is the left tail heavier than the
+    /// right", and bottleneck cells are a percent-scale minority, not a 0.02%
+    /// outlier tail. Under normality 3.5 expects 1.7 cells in 7271, so the
+    /// count is noise -- it returned 0 on six of seven datasets. 2.5 expects
+    /// ~45, and measured across clouds of 2000/4000/8000 the low:high ratio
+    /// holds to 7% on a branching trajectory (0.68/0.67/0.72) while every blob
+    /// dataset stays under 0.17, a 4x separation with no overlap.
+    #[arg(long, default_value_t = 2.5)]
     ricci_cut: f64,
     /// Suppress the stage progress on stderr.
     #[arg(long, short)]
@@ -111,11 +119,6 @@ const GP_TOL: f64 = 0.15;
 /// the next-longest before "separate patches" beats "one lumpy manifold".
 const MAX_PATCHES: usize = 40;
 const MIN_MST_GAP: f64 = 2.0;
-
-/// Relative eigengap `lambda_k+1 / lambda_k` needed to call the graph split.
-/// A path graph tops out around 4 (`(k+1)^2/k^2`), so 5 clears the connected
-/// case that an absolute threshold on lambda_1 would misclassify.
-const MIN_EIGENGAP: f64 = 5.0;
 
 /// Laziness of the Ollivier-Ricci random walk: mass kept at the centre.
 const RICCI_ALPHA: f64 = 0.5;
@@ -284,7 +287,7 @@ fn main() -> Result<()> {
         corrdim::correlation_dimension(&gp, gp_n, GP_TOL),
         localpca::summary(&lpca, embed_k),
         betti::patch_count(&mst, MAX_PATCHES, MIN_MST_GAP),
-        fiedler::fiedler(&lap, MAX_PATCHES, MIN_EIGENGAP),
+        fiedler::fiedler(&lap, MAX_PATCHES),
         ricci::curvature_summary(&kappa, args.ricci_cut),
     ];
 

@@ -26,8 +26,8 @@ twonn-plateau    14   13.784   d = 13.78 over N = 62..248 (3 levels within 10%)
 corr-dim         15   15.106   D = 15.11 over 7 scales flat to 15% -- AT THE CEILING: D <= 6.6
 local-pca        14   14.234   d = 14.23 at the dip (k=256, r=16.79); 16.00 at k=16 -> 14.23 at k=256
 betti0            1    0.010   continuous: clumpiness 0.010, largest MST step 1.12x (< 2)
-fiedler           1    2.057   connected: lambda_1 = 2.64e-2, largest relative eigengap only 2.06x
-ricci-neg         0    0.192   0/1987 beyond -3.5 robust-z; tail skew +0.192; 80% have kappa < 0
+fiedler           1    2.057   connected: lambda_1 = 2.64e-2, relative eigengap 2.06x at k = 2
+ricci-neg         3    0.192   3/1987 beyond -2.5 robust-z (42 beyond +2.5, ratio 0.07x); skew +0.192
 ```
 
 Followed by four tables: the lowest Laplacian eigenvalues, the correlation
@@ -46,8 +46,8 @@ which really are counting eigenvalues.
 
 The middle column is not one quantity. Rows 1-2 are a **rank** (linear
 components above the noise floor), rows 3-6 are a **dimension** (of the
-manifold the cells lie on), rows 7-8 are a **piece count**, row 9 is a **cell
-count**. They are not comparable to each other and none of them is the number
+manifold the cells lie on), row 7 is a **piece count**, row 8 is a **component
+count**, row 9 is a **cell count**. They are not comparable to each other and none of them is the number
 of cell types.
 
 | row | question | number |
@@ -59,7 +59,7 @@ of cell types.
 | `corr-dim` | Grassberger-Procaccia slope of log C(r) | dimension |
 | `local-pca` | dimension of the local covariance, against neighbourhood size | dimension |
 | `betti0` | one connected manifold, or separated patches? | patches (+ clumpiness) |
-| `fiedler` | same question via the Laplacian eigengap | patches |
+| `fiedler` | exact connected components, and how thin the bottleneck is | components (+ eigengap) |
 | `ricci-neg` | which cells sit on bottlenecks (extreme negative curvature)? | cells (+ tail skew) |
 
 Rows 3-9 run on the PCA scores truncated at the Tracy-Widom rank, not on the
@@ -81,6 +81,14 @@ Sinkhorn's own convergence flag is *not* the diagnostic — see notes.md.
 
 **Genes are pre-selected by variance**, which is selection on the same
 statistic the spectrum measures. Expect a mild upward bias in the rank.
+
+**`fiedler` does not report a patch count.** The relative eigengap was measured
+crossing any threshold you place, in *both* directions, purely by changing
+`--geom-cells` — up 3.46 → 6.40 on one dataset, down 7.10 → 5.88 on another. It
+is a max over 40 order statistics of a noisy ratio. The row still reports the
+exact-zero count, which is the number of connected components with nothing to
+tune, and λ₁, which is a real measure of how thin the bottleneck is. For "one
+piece or several" read `betti0`.
 
 **Every dimension row is an upper bound at these cell counts.** Measured on
 three datasets at clouds of 2000, 4000 and 8000 cells: `twonn` rises
@@ -116,7 +124,7 @@ it is within 80% of the ceiling; treat those as a lower bound.
 | `--twonn-reps` | 3 | Random subsamples per decimation level in the scale analysis. |
 | `--knn` | 15 | Neighbours per cell in the Laplacian and Ricci graphs. |
 | `--ricci-metric` | geodesic | Ground metric for transport. `hops` and `euclidean` are wrong; see notes.md. |
-| `--ricci-cut` | 3.5 | Robust-z cut for "extreme" curvature, in the data's own MAD units. |
+| `--ricci-cut` | 2.5 | Robust-z cut for "extreme" curvature, in the data's own MAD units. |
 | `--format` | txt | `txt` or `json`. |
 | `-q` | off | Suppress stage progress on stderr. |
 

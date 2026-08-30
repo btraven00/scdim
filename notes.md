@@ -17,6 +17,7 @@ is the user-facing part; this is the working record.
 - [One cloud, six diagnostics](#one-cloud-six-diagnostics)
 - [Geometry in the signal subspace](#geometry-in-the-signal-subspace)
 - [Does a bigger cloud help?](#does-a-bigger-cloud-help)
+- [The trajectory case: GSE132188](#the-trajectory-case-gse132188)
 - [Measurements on labelled data](#measurements-on-labelled-data)
 - [Deferred: scwarp acceleration](#deferred-scwarp-acceleration)
 - [Candidates not implemented](#candidates-not-implemented)
@@ -376,19 +377,18 @@ patch counts (zheng 5.24 → "5 patches" at one cloud size, 6.19 → "15 patches
 the next). It was implemented, measured, and reverted; the reasoning is left in
 the source so nobody re-derives it.
 
-So the row hedges. A ratio that clears 5× by less than 30% is inside its own
-measured drift and gets `MARGINAL` with no patch count. The band is one-sided
-and the asymmetry is the point: *below* the threshold there is a principled null
-— a path graph tops out at 4 — so anything under 5 is consistent with a
-connected manifold however thin, and a symmetric band would swallow that at 4.0
-and hedge on the one case this row was designed to get right. Above 5 there is
-no scale at all, which is exactly where the drift bites.
+So the row no longer emits a patch count at all. A threshold of 5, and a
+one-sided hedging band around it, were both tried and both flipped verdicts
+across cloud sizes — and the drift runs in *both* directions across datasets (up
+3.46 → 6.40 on seurat PBMC, down 7.10 → 5.88 on the pancreas), so it is noise
+rather than a correctable bias and no placement of a threshold survives it. The
+gap is reported as a number now and nothing is inferred from it.
 
-Result on the nine runs: every one now reports one patch, eight say `connected`
-and only seurat at 8000 cells says `MARGINAL` — where it previously asserted
-five. When the row hedges, `betti0` answers the same question from the MST with
-no k, no bandwidth and no eigensolver, and its `clumpiness` is the number to
-read.
+What the row still says with authority is the exact-zero count: the multiplicity
+of eigenvalue 0 is the number of connected components, with nothing to tune. λ₁
+remains a real measure of how thin the bottleneck is. For "one piece or several"
+read `betti0`, which answers it from the MST with no k, no bandwidth and no
+eigensolver, and whose `clumpiness` holds to 6% across the same ladder.
 
 Known gap: a node whose affinities all underflow to zero gets an identity row
 and eigenvalue 1, so it is not counted as its own component. Union
@@ -454,12 +454,33 @@ that isolates the tail on one dataset sits in the bulk of the next.
 `--ricci-cut` is therefore in robust z units of the data's own curvature
 distribution (Iglewicz-Hoaglin): z = 0.6745(κ − median)/MAD. Being a ratio of
 two quantities in the same units it carries none of its own, so it transfers
-across datasets, k and α. 3.5 is the conventional outlier threshold.
+across datasets, k and α.
+
+**The default is 2.5, not Iglewicz-Hoaglin's conventional 3.5.** That 3.5
+answers "which cells are outliers"; this row asks "is the left tail heavier than
+the right", and bottleneck cells are a percent-scale minority population, not a
+0.02% outlier tail. Under normality 3.5 expects 1.7 cells in 7271 — the count is
+noise, and it duly returned 0 on six of seven datasets. 2.5 expects ~45.
+Measured across clouds of 2000/4000/8000 cells on four datasets:
+
+| cut | pancreas (trajectory) | drift | three blob datasets | separation |
+|---|---|---|---|---|
+| z=2.0 | 0.88 / 1.18 / 1.00 | 25% | 0.09 – 0.32 | 2.8× |
+| **z=2.5** | **0.68 / 0.67 / 0.72** | **7%** | **0.01 – 0.17** | **4×** |
+| z=3.5 (old default) | 1.00 / 0.80 / 0.46 | 54% | 0.00 – 0.01 | unusable |
+
+At 2.5 the trajectory's ratio moves 7% across a 4× change in cloud size — the
+most stable number measured anywhere in this project — with no overlap against
+any blob run at any size. At 3.5 the blob denominators are literally zero and
+the trajectory itself swings 54%.
 
 The count is paired with the tail asymmetry — cells below −cut against cells
 above +cut — which needs no distributional assumption. Symmetric noise about a
 flat mean gives ~1; genuine bottlenecks put mass in the left tail with nothing
 matching on the right, so the ratio climbs.
+
+Measured at the old 3.5 cut, on datasets not available here — kept for the
+record, these do not regenerate under the current default:
 
 | dataset | κ < 0 | beyond −3.5z | beyond +3.5z | asymmetry |
 |---|---|---|---|---|
@@ -467,6 +488,26 @@ matching on the right, so the ratio climbs.
 | tm-droplet-trachea (K=5) | 56% | 0 | 9 | 0.00 |
 | pbmc (K=31) | 50% | 0 | 17 | 0.00 |
 | **tm-facs (K=81)** | **17%** | **6** | **0** | **6.00** |
+
+And at the current 2.5 cut, on the four datasets measured here, at the
+~8000-cell cloud:
+
+| dataset | shape | κ < 0 | beyond −2.5z | beyond +2.5z | ratio | tail skew |
+|---|---|---|---|---|---|---|
+| **pancreas GSE132188** | **branching trajectory** | 82% | **84** | 116 | **0.72** | **−0.014** |
+| Norman 2019 | Perturb-seq, one cell line | 94% | 7 | 225 | 0.03 | +0.210 |
+| zheng2017 | sorted PBMC populations | 82% | 10 | 243 | 0.04 | +0.248 |
+| seurat PBMC | PBMC | 84% | 10 | 227 | 0.04 | +0.158 |
+
+The trajectory separates from all three blobs on both statistics, at every cloud
+size, with no overlap — the row working as designed, on the first dataset with
+the structure it was built for.
+
+Note the κ < 0 column again: 82–94% and it orders nothing. On the pancreas the
+median κ is +0.017 at an 1818-cell cloud and −0.071 at 7271, so the *sign* of
+the median flips with the sampling. That fraction is a statement about where the
+median sits and nothing else, which is the whole reason the cut is in robust-z
+units.
 
 The κ < 0 fraction is anti-correlated with the extreme count. Setty is 39%
 negative with zero extremes; tm-facs is only 17% negative but is the sole
@@ -642,7 +683,7 @@ data rather than the sample.
 | MST step ratio (was `betti0`'s) | 11–13%, monotone → 1 | ~3% at 8000 | dead |
 | **clumpiness** `log(AM/GM)` | 7–8% | **2×**, same order at every size | keeps |
 | ricci tail skew | 15–25% | ~1.5× | weak but honest |
-| fiedler eigengap | 3.46 → 6.40 on one dataset | — | **hedged, see below** |
+| fiedler eigengap | up 3.46→6.40 on one dataset, down 7.10→5.88 on another | — | **verdict dropped** |
 
 The MST step ratio decays toward 1 as the cloud grows, because a denser MST has
 a smaller maximum step whatever the structure — at 8000 cells the three datasets
@@ -651,6 +692,68 @@ differently. It was measuring the sample size. `clumpiness` drifts only slightly
 less but separates the datasets by 2× with a stable ordering, a 25:1 signal to
 drift; and zheng2017, a concatenation of separately sorted PBMC populations and
 so the most genuinely discrete of the three, is the one that scores double.
+
+## The trajectory case: GSE132188
+
+Every dataset above is blob-shaped — Perturb-seq on one cell line, and two PBMC
+sets — and all three read as one continuous piece with a firmly right-skewed
+curvature distribution. GSE132188 (Bastidas-Ponce et al. 2019, mouse pancreatic
+endocrinogenesis, E12.5–E15.5, 36351 × 17327) is the missing case: a real
+branching differentiation trajectory with six lineage annotations down to
+Alpha/Beta/Epsilon/Delta.
+
+Two practical notes on the file. The GEO h5ad is the **legacy pre-anndata-0.7
+layout** — no `encoding-type` attribute, `obs`/`var` as HDF5 compound recarrays,
+`X` tagged `h5sparse_format` — and `scx` rejects it outright as an unrecognized
+HDF5 file. It has to be re-saved through anndata first. And `X` is **log1p
+normalised, not raw counts**; there are no layers and no `.raw`, so raw counts
+mean going back to `GSE132188_RAW.tar`. Biwhitening is derived for counts, so
+this could have voided the two spectral rows — it did not, `bulk-KS` comes back
+at 0.051 and TW = MP = 65 exactly, the tightest agreement of any dataset here.
+Whether the rank moves on true counts is untested and worth knowing.
+
+Run across the ladder, ~1818 / 3636 / 7271 cells:
+
+| cloud | clumpiness | fiedler gap | ricci ratio (z=2.5) | tail skew | twonn | local-pca |
+|---|---|---|---|---|---|---|
+| 1818 | 0.0062 | 7.10 | 0.68 | +0.034 | 22.70 | 10.94 |
+| 3636 | 0.0061 | 6.28 | 0.67 | −0.029 | 23.64 | 11.18 |
+| 7271 | 0.0058 | 5.88 | 0.72 | −0.014 | 25.66 | 10.90 |
+
+**What the ladder killed.** At the smallest cloud `fiedler` read 7.10× and
+asserted two weakly-joined patches, and `ricci-neg` read 1 cell below the cut
+against 0 above — both looking like a clean bottleneck detection. Neither
+survives: the eigengap falls to 5.88 by 7271 cells, and the 3.5-cut counts go
+1/0 → 4/5 → 11/24, i.e. right-dominant again. Both were small-sample artefacts,
+and reading them as findings is precisely the error the ladder exists to catch.
+The eigengap result is what retired that row's verdict entirely — drifting *down*
+here and *up* on seurat PBMC means it is noise, not a correctable bias.
+
+**What survives.** Two things, and they are the two floats added this week.
+
+- **The curvature tail separates the trajectory from every blob at every cloud
+  size, with no overlap.** At the 2.5 cut the low:high ratio is 0.68/0.67/0.72
+  against 0.01–0.17 for nine blob runs; the skew is +0.034/−0.029/−0.014 against
+  +0.14 to +0.25. The cut-free version says the same: the left tail runs
+  (median − p1)/MAD = 3.90 here against 2.72–2.87 on the blobs, while the right
+  tails are indistinguishable.
+- **`local-pca` gives 10.94 / 11.18 / 10.90 — 2.5% drift**, the steadiest reading
+  in the project, and low. Against Norman's ~17 that says a differentiation
+  trajectory has fewer degrees of freedom than a hundred-odd CRISPR
+  perturbations, which is the right answer for the right reason.
+
+**The verdict on the topology:** one connected continuum, the lowest clumpiness
+of any dataset measured (a smooth trajectory has *more* uniform MST bars than
+clustered data, so this is agreement rather than contradiction), ~11-dimensional,
+with a curvature distribution unlike any blob. The trajectory is real. The branch
+*points* are not resolvable at 7000 cells — no cut isolates them, and the
+strongest evidence for them is distributional, not per-cell.
+
+**A prediction that failed:** `corr-dim` was expected to finally work here, since
+a trajectory should be the D 2–5 regime its unit tests cover. It reports 18.2
+against a ceiling of 7.7 — still meaningless. A branching trajectory is not a
+low-dimensional object at the scales reachable; the branches live inside
+something ~20-dimensional.
 
 ## Measurements on labelled data
 

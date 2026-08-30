@@ -25,17 +25,28 @@ Two traps that have cost time twice each:
   `cargo build --release` before measuring anything.
 - `Cloud::new` strides by an integer, so reachable cloud sizes are only n, n/2,
   n/3 … `--geom-cells 6000` out of 8000 rows silently gives 4000.
+- `scx` rejects the legacy pre-anndata-0.7 h5ad layout (no `encoding-type`
+  attribute) outright. GEO files of that vintage need re-saving through anndata
+  before they can be read at all.
 
 ## Datasets
 
-- [ ] **GSE132188**, pancreatic endocrinogenesis (Bastidas-Ponce 2019). Every
+- [x] **GSE132188**, pancreatic endocrinogenesis (Bastidas-Ponce 2019) — done,
+      see [notes.md](notes.md#the-trajectory-case-gse132188). Every
       dataset measured so far is blob-shaped — Perturb-seq on one cell line, and
       two PBMC sets — and all three read as one continuous piece with no
       bottlenecks. This is the missing case: a real branching trajectory with
       branch points. It is the shape `ricci-neg` was built for and has never
       been tested on here, the D 2–5 regime where `corr-dim` can actually work
       below its ceiling, and the best chance of `local-pca` showing an interior
-      dip instead of a monotone fall.
+      dip instead of a monotone fall. Outcome: the curvature tail and `local-pca`
+      both separate it cleanly from the blobs; `corr-dim` still does not work;
+      the branch points are not resolvable per-cell at 7000 cells.
+- [ ] **Raw counts for GSE132188.** The GEO h5ad is log1p-normalised with no
+      layers and no `.raw`. Biwhitening is derived for counts and `bulk-KS` came
+      back fine (0.051) anyway, but whether the rank moves on the true counts in
+      `GSE132188_RAW.tar` is untested.
+- [ ] **A second trajectory dataset.** Every conclusion above rests on one.
 
 ## Diagnostics not built
 

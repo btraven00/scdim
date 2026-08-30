@@ -31,19 +31,6 @@ use faer::{Mat, Side};
 use crate::geom::Cloud;
 use crate::rank::Estimate;
 
-/// Width of the band *above* the threshold in which the eigengap is not
-/// evidence, as a fraction of it. 0.3 is what the measurement forces: on the
-/// seurat PBMC file the ratio ran 3.46 -> 4.22 -> 6.40 across clouds of 2000,
-/// 4000 and 8000 cells, so a value of 6.40 is not distinguishable from a value
-/// of 3.46 on the same data at a different `--geom-cells`.
-///
-/// One-sided, and the asymmetry is the point. *Below* the threshold there is a
-/// principled null: a path graph's consecutive ratios are `(k+1)^2/k^2`, which
-/// tops out at 4, so anything under 5 is consistent with a connected manifold
-/// however thin. *Above* it there is no scale at all, which is exactly where
-/// the drift bites. A symmetric band would swallow the path graph at 4.0 and
-/// call the one case this row was designed to get right "marginal".
-const MARGIN: f64 = 0.3;
 
 /// Bottom eigenvalues of the normalised Laplacian of the k-NN graph,
 /// ascending. Returns the whole spectrum; callers look at the first few.
@@ -135,15 +122,23 @@ pub fn laplacian_spectrum(c: &Cloud, nbr: &[Vec<(f64, usize)>]) -> Vec<f64> {
 /// 5.24 -> "5 patches" then 6.19 -> "15 patches"). It was measured and
 /// discarded; do not re-derive it.
 ///
-/// So the row hedges instead. Within `MARGIN` of the threshold the ratio is
-/// inside its own measured drift and cannot support a count, and the row says
-/// that rather than picking a side. `betti0` answers the same question from the
-/// MST with no k, no bandwidth and no eigensolver, and its `clumpiness` is the
-/// statistic to trust when the two disagree.
+/// So this row no longer emits a patch count at all. The gap is reported as a
+/// number and nothing is inferred from it. Thresholds of 5 and a hedging band
+/// around it were both tried and both flipped verdicts across cloud sizes; the
+/// drift runs in *both* directions across datasets (up 3.46 -> 6.40 on seurat
+/// PBMC, down 7.10 -> 5.88 on the pancreas), so it is noise rather than a
+/// correctable bias, and no placement of a threshold survives it.
+///
+/// What this row still says with authority is the exact-zero count: the
+/// multiplicity of eigenvalue 0 is the number of connected components, with no
+/// threshold to tune. `lambda_1` remains a real measure of how thin the
+/// bottleneck is. For "one piece or several" read `betti0`, which answers it
+/// from the MST with no k, no bandwidth and no eigensolver, and whose
+/// `clumpiness` holds to 6% across the same ladder.
 ///
 /// `lambda_1` is still reported: as algebraic connectivity it is a real measure
 /// of how thin the bottleneck is. It is just not, on its own, a classifier.
-pub fn fiedler(eigs: &[f64], max_patches: usize, min_ratio: f64) -> Estimate {
+pub fn fiedler(eigs: &[f64], max_patches: usize) -> Estimate {
     if eigs.len() < 4 {
         return Estimate {
             name: "fiedler",
@@ -182,44 +177,13 @@ pub fn fiedler(eigs: &[f64], max_patches: usize, min_ratio: f64) -> Estimate {
             pvalues: Vec::new(),
         };
     }
-    // Inside its own measured drift: the same data at a different --geom-cells
-    // lands on the other side of the threshold, so a count here would be a
-    // statement about the cloud size.
-    if best_ratio >= min_ratio && best_ratio < (1.0 + MARGIN) * min_ratio {
-        return Estimate {
-            name: "fiedler",
-            rank: 1,
-            detail: format!(
-                "MARGINAL: relative eigengap {best_ratio:.2}x at k = {best_k} clears the \
-                 {min_ratio}x threshold by less than {:.0}%, and this ratio has been \
-                 measured drifting further than that on one dataset across a 4x change in \
-                 cloud size. No patch count -- read betti0's clumpiness \
-                 (lambda_1 = {lambda1:.2e})",
-                MARGIN * 100.0
-            ),
-            stat: Some(best_ratio),
-            pvalues: Vec::new(),
-        };
-    }
-    if best_ratio >= min_ratio {
-        return Estimate {
-            name: "fiedler",
-            rank: best_k,
-            detail: format!(
-                "{best_k} weakly-joined patches: connected (lambda_1 = {lambda1:.2e}) but \
-                 relative eigengap {best_ratio:.2}x at k = {best_k} (>= {min_ratio})"
-            ),
-            stat: Some(best_ratio),
-            pvalues: Vec::new(),
-        };
-    }
     Estimate {
         name: "fiedler",
         rank: 1,
         detail: format!(
-            "connected: lambda_1 = {lambda1:.2e}, largest relative eigengap only \
-             {best_ratio:.2}x (< {min_ratio}) -- one patch. Note a small lambda_1 alone \
-             means thin, not split: a path graph gives ~(pi/N)^2"
+            "connected: lambda_1 = {lambda1:.2e}, largest relative eigengap {best_ratio:.2}x \
+             at k = {best_k}. No patch count from this row -- the gap is a number, not a \
+             verdict; read betti0's clumpiness"
         ),
         stat: Some(best_ratio),
         pvalues: Vec::new(),
@@ -255,7 +219,7 @@ mod tests {
             (if j == blob { 100.0 } else { 0.0 }) + r()
         });
         let eigs = spectrum(&x, 600, 15);
-        let est = fiedler(&eigs, 20, 5.0);
+        let est = fiedler(&eigs, 20);
         assert!(eigs[1] < 1e-8, "lambda_1 = {:.3e}", eigs[1]);
         assert_eq!(est.rank, 3, "{}", est.detail);
         assert!(est.detail.starts_with("PARTITIONED"), "{}", est.detail);
@@ -276,7 +240,7 @@ mod tests {
             }
         });
         let eigs = spectrum(&x, 800, 15);
-        let est = fiedler(&eigs, 20, 5.0);
+        let est = fiedler(&eigs, 20);
         assert!(eigs[1] > 0.0 && eigs[1] < 1e-3, "lambda_1 = {:.3e}", eigs[1]);
         assert_eq!(est.rank, 1, "{}", est.detail);
         assert!(est.detail.starts_with("connected"), "{}", est.detail);
@@ -289,7 +253,7 @@ mod tests {
         let mut r = lcg(5);
         let x = Mat::from_fn(400, 10, |_, _| r());
         let eigs = spectrum(&x, 400, 10);
-        assert_eq!(fiedler(&eigs, 20, 5.0).rank, 1);
+        assert_eq!(fiedler(&eigs, 20).rank, 1);
         assert!(eigs[0].abs() < 1e-9, "lambda_0 = {:.3e}", eigs[0]);
         assert!(eigs.windows(2).all(|w| w[1] >= w[0] - 1e-12));
         assert!(eigs.iter().all(|&e| (-1e-9..=2.0 + 1e-9).contains(&e)));
