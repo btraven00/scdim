@@ -14,5 +14,6 @@ pub mod localpca;
 pub mod rank;
 pub mod progress;
 pub mod ricci;
+pub mod tangent;
 pub mod tw;
 pub mod twonn;

@@ -11,6 +11,7 @@ is the user-facing part; this is the working record.
 - [TwoNN](#twonn) and [the scale analysis](#twonn-scale-analysis-decimation)
 - [Correlation dimension](#correlation-dimension)
 - [Local PCA](#local-pca)
+- [Tangent-space overlap](#tangent-space-overlap)
 - [Betti-0 from the MST](#betti-0-from-the-mst)
 - [Fiedler value and eigengap](#fiedler-value-and-eigengap)
 - [Ollivier-Ricci curvature](#ollivier-ricci-curvature)
@@ -273,6 +274,82 @@ The ladder stops at k = 256 (`K_CAP`), not at the cloud size. All three
 datasets are still descending there, so the honest reading is an upper bound.
 Raising the cap is O(k³) per centre and would need the centre count to drop to
 pay for it.
+
+## Tangent-space overlap
+
+`local-pca` measures how many directions a cell can move in. This asks a
+different question with the same neighbourhoods: whether the directions
+available *here* are the directions available *there*. `--tangent`, off by
+default.
+
+Local PCA at a point gives an orthonormal basis U_x for its tangent space. The
+singular values of UₓᵀU_y are the cosines of the principal angles between two
+such spaces, and the scalar worth reporting is
+
+```
+overlap(x, y) = tr(Pₓ P_y) = ‖UₓᵀU_y‖²_F = Σ cos²θᵢ
+```
+
+the **effective number of shared dimensions** — exactly 3 for two subspaces
+sharing a 3-plane and otherwise orthogonal, continuous in between, and
+independent of which basis was chosen for either (the Grassmannian chordal inner
+product). Since this happens in PCA-score space, a shared direction maps back
+through the loadings to named genes.
+
+### It is a diagnostic for continua, not for clusters
+
+If the data has well-separated clusters, `betti0` and `fiedler` say so and the
+regions are already obvious; per-cluster PCA answers the question and this adds
+nothing. What it is for is the case those rows call one connected piece — so
+far, every dataset tried. There are no clusters, yet the tangent space still
+rotates as you move, and nothing else here can see that. **Tangent rotation is
+curvature, not clustering.** A flat patch keeps one tangent space everywhere and
+the curve stays at d; a curved manifold decays.
+
+### Two corrections, without which it reads noise
+
+**Random subspaces already overlap.** For independent uniformly random
+d-dimensional subspaces of ℝᴰ, E[tr(PₓP_y)] = d²/D. At d = 11 in a 65-dimensional
+embedding that is 1.86 shared dimensions before any biology. The excess over
+that null is the column to read.
+
+**The null is also a ceiling**, in the spirit of Eckmann-Ruelle in `corrdim`:
+the measurement has room only when d/D is small. At d = 14 in D = 29 the null is
+6.8 of 14 — half the answer is chance. The row shouts when the null exceeds 30%
+of d.
+
+**Nearby neighbourhoods share their cells.** At one or two hops the two
+k-neighbourhoods are largely the same points, so a high overlap there is
+arithmetic. The informative part is the far end.
+
+Two neighbourhood sizes are used deliberately: hops are counted on the shared
+15-NN graph, so "graph distance" means what it means in `fiedler` and `ricci`,
+while the bases are fitted on their own much larger k = 8d neighbourhoods. A
+d-dimensional subspace fitted through k+1 points is noise unless k is comfortably
+larger than d — fitting 21-dimensional subspaces through 16 points produced
+nothing but the null, and returned an empty curve outright whenever d ≥ 15.
+
+Measured, `--max-cells 4000`, excess shared dimensions by hop:
+
+| dataset | d | D | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| seurat PBMC | 21 | 76 | 9.82 | 7.53 | 5.06 | 2.81 | 1.11 | −0.57 | −1.15 | −1.12 | −0.98 |
+| pancreas | 10 | 49 | 5.33 | 3.96 | 2.84 | 2.09 | 1.56 | 1.19 | 0.85 | 0.37 | 0.14 |
+| Norman | 14 | 29 | 3.60 | 2.56 | 1.75 | 1.27 | 0.99 | 0.73 | 0.49 | 0.39 | 1.08 |
+| zheng2017 | 9 | 20 | 2.57 | 1.94 | 1.45 | 1.11 | 0.65 | 0.53 | 0.54 | 0.52 | 0.56 |
+
+Every dataset decays: no cloud here holds one tangent space across its whole
+extent, which is another way of saying they are all curved rather than flat.
+Two shapes are visible in the decay. seurat PBMC and the pancreas go to zero and
+stay there — distant regions share nothing above chance. zheng2017 flattens at
+~0.5 and stops, which is the shape a shared global program would produce, though
+0.5 of 9 dimensions against a null of 4.05 is not much to rest a claim on.
+
+seurat PBMC's excursion to −1.15 is worth noting: the null assumes *independent*
+random subspaces, and tangent spaces on the same manifold at maximum separation
+are not independent — they are constrained to be jointly consistent with one
+global geometry, which can put them further apart than chance. Below zero means
+"more orthogonal than random", not an error.
 
 ## Betti-0 from the MST
 

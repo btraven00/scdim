@@ -48,6 +48,21 @@ Two traps that have cost time twice each:
       `GSE132188_RAW.tar` is untested.
 - [ ] **A second trajectory dataset.** Every conclusion above rests on one.
 
+## Tangent overlap follow-ups
+
+- [ ] **Run the ladder on it.** Every other statistic here was validated at
+      2000/4000/8000 geometry cells; this one has not been, and the hop bins are
+      the obvious thing to drift (a denser graph means more hops to cross the
+      same distance).
+- [ ] **The label version.** GSE132188 ships six lineage annotations. One
+      tangent space per annotated group gives a pairwise overlap matrix, which
+      answers "do the Alpha and Beta branches share directions" directly. Needs
+      scdim to read `obs`, which it deliberately never has.
+- [ ] **Name the shared directions.** The overlap is computed in PCA-score
+      space, so the shared subspace maps back through the loadings to genes.
+      That turns "these regions share 2 directions" into "they share *these two
+      programs*", which is the version a biologist can act on.
+
 ## Diagnostics not built
 
 Ordered by value per line. All reuse state already computed.

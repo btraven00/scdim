@@ -18,6 +18,14 @@ use rayon::prelude::*;
 pub struct Cloud {
     /// Rows of the embedding each local index came from.
     pub rows: Vec<usize>,
+    /// The points themselves, `len() x embedding dim`.
+    ///
+    /// The Gram matrix is enough for every distance-based diagnostic, and was
+    /// all this held for a while. Comparing two neighbourhoods' *tangent
+    /// spaces* needs a common frame, though, which distances alone do not carry
+    /// -- classical MDS reconstructs each neighbourhood in its own arbitrary
+    /// basis. Keeping the coordinates costs 2000 x 65 x 8 = 1 MB.
+    pub coords: Mat<f64>,
     gram: Mat<f64>,
     diag: Vec<f64>,
 }
@@ -32,7 +40,7 @@ impl Cloud {
         let sub = Mat::from_fn(m, x.ncols(), |i, j| x.read(rows[i], j));
         let gram = sub.as_ref() * sub.as_ref().transpose();
         let diag = (0..m).map(|i| gram.read(i, i)).collect();
-        Cloud { rows, gram, diag }
+        Cloud { rows, coords: sub, gram, diag }
     }
 
     pub fn len(&self) -> usize {

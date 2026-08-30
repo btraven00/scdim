@@ -2,7 +2,9 @@ use std::time::Instant;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use scdim::{betti, corrdim, fiedler, geom, io, localpca, progress::Progress, rank, ricci, twonn};
+use scdim::{
+    betti, corrdim, fiedler, geom, io, localpca, progress::Progress, rank, ricci, tangent, twonn,
+};
 
 #[derive(Parser)]
 #[command(about = "Estimate the number of signal components in a single-cell matrix")]
@@ -74,6 +76,13 @@ struct Args {
     /// dataset stays under 0.17, a 4x separation with no overlap.
     #[arg(long, default_value_t = 2.5)]
     ricci_cut: f64,
+    /// Also measure whether distant regions of the cloud vary along the same
+    /// directions: local tangent spaces compared by principal angles, against
+    /// graph distance. Off by default -- it is an extra table, and it answers a
+    /// question about *continua*, so it is only interesting once betti0 and
+    /// fiedler have called the data one piece.
+    #[arg(long)]
+    tangent: bool,
     /// Suppress the stage progress on stderr.
     #[arg(long, short)]
     quiet: bool,
@@ -277,6 +286,18 @@ fn main() -> Result<()> {
     pr.stage("  twonn fit", nn.1, &format!("d = {}", nn.0.as_ref().expect("spawned").rank));
     let (mst, lap, kappa, (gp, gp_n), scale, lpca) =
         (mst.0, lap.0, kappa.0, gp.0, scale.0, lpca.0);
+    // Needs local-pca's dip for the tangent dimension, so it cannot join the
+    // parallel block above.
+    let tangent = args.tangent.then(|| {
+        pr.begin("tangent-space overlap");
+        let d = localpca::summary(&lpca, embed_k).rank.max(2);
+        let (curve, null) = timed(|| tangent::tangent_overlap(&cloud, &knn, d)).0;
+        pr.ok(
+            "tangent-space overlap",
+            &format!("{} hop bins, d = {d}, null = {null:.2}", curve.len()),
+        );
+        (curve, null, d)
+    });
     pr.finish();
 
     let estimates = [
@@ -340,6 +361,23 @@ fn main() -> Result<()> {
                     p.n, p.mean_r2, p.d
                 );
             }
+            if let Some((curve, null, d)) = &tangent {
+                let warn = if *null > tangent::NULL_WARN * *d as f64 {
+                    " -- NULL IS LARGE: d/D leaves little room, read the excess column \
+                     with that in mind"
+                } else {
+                    ""
+                };
+                println!(
+                    "\nTangent-space overlap (d = {d} in {embed_k}D; random subspaces share \
+                     {null:.2}{warn}):"
+                );
+                println!("{:>8} {:>9} {:>9} {:>9}", "hops", "pairs", "shared", "excess");
+                for p in curve.iter() {
+                    let h = if p.hops >= 10 { format!(">={}", p.hops) } else { p.hops.to_string() };
+                    println!("{h:>8} {:>9} {:>9.2} {:>9.2}", p.pairs, p.shared, p.excess);
+                }
+            }
             println!("\nLocal PCA (Little-Maggioni-Rosasco):");
             println!(
                 "{:>8} {:>10} {:>8} {:>9} {:>9}",
@@ -379,7 +417,7 @@ fn main() -> Result<()> {
                 .collect();
             let head = spec.eigenvalues.iter().take(50);
             println!(
-                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}],"local_pca":[{}]}}"#,
+                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}],"local_pca":[{}],"tangent_overlap":[{}]}}"#,
                 jstr(&args.path),
                 spec.n,
                 spec.p,
@@ -427,7 +465,18 @@ fn main() -> Result<()> {
                         p.centres
                     ))
                     .collect::<Vec<_>>()
-                    .join(",")
+                    .join(","),
+                tangent.as_ref().map_or(String::new(), |(curve, _, _)| curve
+                    .iter()
+                    .map(|p| format!(
+                        r#"{{"hops":{},"pairs":{},"shared":{},"excess":{}}}"#,
+                        p.hops,
+                        p.pairs,
+                        num(p.shared, 6),
+                        num(p.excess, 6)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(","))
             );
         }
     }
