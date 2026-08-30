@@ -372,10 +372,16 @@ fn main() -> Result<()> {
                     "\nTangent-space overlap (d = {d} in {embed_k}D; random subspaces share \
                      {null:.2}{warn}):"
                 );
-                println!("{:>8} {:>9} {:>9} {:>9}", "hops", "pairs", "shared", "excess");
+                println!(
+                    "{:>8} {:>9} {:>9} {:>9} {:>8}",
+                    "hops", "pairs", "shared", "excess", "frac"
+                );
                 for p in curve.iter() {
                     let h = if p.hops >= 10 { format!(">={}", p.hops) } else { p.hops.to_string() };
-                    println!("{h:>8} {:>9} {:>9.2} {:>9.2}", p.pairs, p.shared, p.excess);
+                    println!(
+                        "{h:>8} {:>9} {:>9.2} {:>9.2} {:>8.3}",
+                        p.pairs, p.shared, p.excess, p.frac
+                    );
                 }
             }
             println!("\nLocal PCA (Little-Maggioni-Rosasco):");
@@ -469,11 +475,12 @@ fn main() -> Result<()> {
                 tangent.as_ref().map_or(String::new(), |(curve, _, _)| curve
                     .iter()
                     .map(|p| format!(
-                        r#"{{"hops":{},"pairs":{},"shared":{},"excess":{}}}"#,
+                        r#"{{"hops":{},"pairs":{},"shared":{},"excess":{},"frac":{}}}"#,
                         p.hops,
                         p.pairs,
                         num(p.shared, 6),
-                        num(p.excess, 6)
+                        num(p.excess, 6),
+                        num(p.frac, 6)
                     ))
                     .collect::<Vec<_>>()
                     .join(","))

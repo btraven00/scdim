@@ -76,6 +76,14 @@ pub struct OverlapPoint {
     pub shared: f64,
     /// The same, less the random-subspace null.
     pub excess: f64,
+    /// `excess` as a fraction of the room there is to measure in.
+    ///
+    /// The null is a ceiling as well as a floor: the largest excess possible is
+    /// `d - d^2/D`, which at d = 14 in D = 29 is 7.2 rather than 14. Raw excess
+    /// is therefore not comparable between datasets with different d and D --
+    /// this is. 1.0 means two identical tangent spaces, 0.0 means no more
+    /// overlap than two random subspaces.
+    pub frac: f64,
 }
 
 /// Tangent-space overlap against graph distance.
@@ -133,13 +141,19 @@ pub fn tangent_overlap(
         }
     }
 
+    // d < dim is enforced above, so the room is strictly positive.
+    let room = d as f64 - null;
     let curve = (1..=MAX_HOPS)
         .filter(|&h| cnt[h] > 0)
-        .map(|h| OverlapPoint {
-            hops: h,
-            pairs: cnt[h],
-            shared: sum[h] / cnt[h] as f64,
-            excess: sum[h] / cnt[h] as f64 - null,
+        .map(|h| {
+            let shared = sum[h] / cnt[h] as f64;
+            OverlapPoint {
+                hops: h,
+                pairs: cnt[h],
+                shared,
+                excess: shared - null,
+                frac: (shared - null) / room,
+            }
         })
         .collect();
     (curve, null)
