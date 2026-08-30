@@ -101,6 +101,14 @@ pub struct LocalPoint {
     pub mean_r: f64,
     /// `min(k, embed_dim)`: no level can report more than this.
     pub ceiling: usize,
+    /// 10th and 90th percentile of the per-neighbourhood dimension.
+    ///
+    /// `d` is computed from the *mean* normalised spectrum, which is the right
+    /// estimator but says nothing about whether the cloud has one dimension
+    /// everywhere. A manifold of constant dimension gives a tight spread; a
+    /// cloud with a 1-D filament joined to a 3-D body gives the same mean and a
+    /// wide one, and only this column separates them.
+    pub spread: (f64, f64),
 }
 
 /// Local dimension against neighbourhood size.
@@ -151,12 +159,21 @@ pub fn local_pca(c: &Cloud, embed_dim: usize) -> Vec<LocalPoint> {
             // the correction diverges, which is the ceiling asserting itself.
             let pr = 1.0 / mean.iter().map(|l| l * l).sum::<f64>();
             let ceiling = k.min(embed_dim);
+            // Same debias and clamp as the headline, applied per neighbourhood.
+            let debias = |p: f64| (p / (1.0 - p / k as f64)).clamp(1.0, ceiling as f64);
+            let mut each: Vec<f64> = per_centre
+                .iter()
+                .map(|(sp, _)| debias(1.0 / sp.iter().map(|l| l * l).sum::<f64>()))
+                .collect();
+            each.sort_by(f64::total_cmp);
+            let q = |f: f64| each[((f * each.len() as f64) as usize).min(each.len() - 1)];
             out.push(LocalPoint {
                 k,
                 centres: per_centre.len(),
                 d: (pr / (1.0 - pr / k as f64)).clamp(1.0, ceiling as f64),
                 mean_r: per_centre.iter().map(|p| p.1).sum::<f64>() / n,
                 ceiling,
+                spread: (q(0.1), q(0.9)),
             });
         }
         k *= 2;

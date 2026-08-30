@@ -421,14 +421,14 @@ fn main() -> Result<()> {
                      --geom-cells settings)"
                 );
                 println!(
-                    "{:>8} {:>9} {:>9} {:>9} {:>9} {:>8}",
-                    "hops", "<r>", "pairs", "shared", "excess", "frac"
+                    "{:>8} {:>9} {:>9} {:>9} {:>7} {:>9} {:>8}",
+                    "hops", "<r>", "pairs", "shared", "sd", "excess", "frac"
                 );
                 for p in curve.iter() {
                     let h = if p.hops >= 10 { format!(">={}", p.hops) } else { p.hops.to_string() };
                     println!(
-                        "{h:>8} {:>9.2} {:>9} {:>9.2} {:>9.2} {:>8.3}",
-                        p.mean_r, p.pairs, p.shared, p.excess, p.frac
+                        "{h:>8} {:>9.2} {:>9} {:>9.2} {:>7.2} {:>9.2} {:>8.3}",
+                        p.mean_r, p.pairs, p.shared, p.sd, p.excess, p.frac
                     );
                 }
                 if !t.spectrum.is_empty() {
@@ -505,13 +505,18 @@ fn main() -> Result<()> {
             }
             println!("\nLocal PCA (Little-Maggioni-Rosasco):");
             println!(
-                "{:>8} {:>10} {:>8} {:>9} {:>9}",
-                "k", "<r_k>", "d", "ceiling", "centres"
+                "{:>8} {:>10} {:>8} {:>13} {:>9} {:>9}",
+                "k", "<r_k>", "d", "d p10-p90", "ceiling", "centres"
             );
             for p in &lpca {
                 println!(
-                    "{:>8} {:>10.3} {:>8.2} {:>9} {:>9}",
-                    p.k, p.mean_r, p.d, p.ceiling, p.centres
+                    "{:>8} {:>10.3} {:>8.2} {:>13} {:>9} {:>9}",
+                    p.k,
+                    p.mean_r,
+                    p.d,
+                    format!("{:.1}-{:.1}", p.spread.0, p.spread.1),
+                    p.ceiling,
+                    p.centres
                 );
             }
         }
@@ -573,10 +578,12 @@ fn main() -> Result<()> {
                     .join(","),
                 lpca.iter()
                     .map(|p| format!(
-                        r#"{{"k":{},"mean_r":{},"d":{},"ceiling":{},"centres":{}}}"#,
+                        r#"{{"k":{},"mean_r":{},"d":{},"p10":{},"p90":{},"ceiling":{},"centres":{}}}"#,
                         p.k,
                         num(p.mean_r, 6),
                         num(p.d, 6),
+                        num(p.spread.0, 6),
+                        num(p.spread.1, 6),
                         p.ceiling,
                         p.centres
                     ))
@@ -637,10 +644,11 @@ fn main() -> Result<()> {
                     .curve
                     .iter()
                     .map(|p| format!(
-                        r#"{{"hops":{},"mean_r":{},"pairs":{},"shared":{},"excess":{},"frac":{}}}"#,
+                        r#"{{"hops":{},"mean_r":{},"pairs":{},"shared":{},"sd":{},"excess":{},"frac":{}}}"#,
                         p.hops,
                         num(p.mean_r, 6),
                         p.pairs,
+                        num(p.sd, 6),
                         num(p.shared, 6),
                         num(p.excess, 6),
                         num(p.frac, 6)

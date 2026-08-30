@@ -218,6 +218,15 @@ pub struct OverlapPoint {
     pub shared: f64,
     /// The same, less the random-subspace null.
     pub excess: f64,
+    /// Standard deviation of `shared` within this bin, over the same pairs.
+    ///
+    /// The mean alone cannot tell a smoothly rotating manifold from two rigid
+    /// pieces meeting at an angle: both give a decaying average. A smooth
+    /// manifold makes overlap a function of distance, so the spread at a fixed
+    /// distance stays small; distinct pieces put within-piece and across-piece
+    /// pairs in the same bin with very different overlaps, and the spread
+    /// blows up.
+    pub sd: f64,
     /// `excess` as a fraction of the room there is to measure in.
     ///
     /// The null is a ceiling as well as a floor: the largest excess possible is
@@ -284,6 +293,7 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
     let null = (d * d) as f64 / dim as f64;
 
     let mut sum = vec![0.0f64; MAX_HOPS + 1];
+    let mut sq = vec![0.0f64; MAX_HOPS + 1];
     let mut dsum = vec![0.0f64; MAX_HOPS + 1];
     let mut cnt = vec![0usize; MAX_HOPS + 1];
     for a in 0..centres.len() {
@@ -293,7 +303,9 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
                 continue; // different components: no distance to bin it at
             }
             let bin = h.min(MAX_HOPS);
-            sum[bin] += frobenius_overlap(&bases[a], &bases[b]);
+            let ov = frobenius_overlap(&bases[a], &bases[b]);
+            sum[bin] += ov;
+            sq[bin] += ov * ov;
             dsum[bin] += c.dist(centres[a], centres[b]);
             cnt[bin] += 1;
         }
@@ -304,8 +316,10 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
     let curve = (1..=MAX_HOPS)
         .filter(|&h| cnt[h] > 0)
         .map(|h| {
-            let shared = sum[h] / cnt[h] as f64;
+            let n = cnt[h] as f64;
+            let shared = sum[h] / n;
             OverlapPoint {
+                sd: (sq[h] / n - shared * shared).max(0.0).sqrt(),
                 hops: h,
                 mean_r: dsum[h] / cnt[h] as f64,
                 pairs: cnt[h],
