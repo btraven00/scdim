@@ -345,6 +345,37 @@ stay there — distant regions share nothing above chance. zheng2017 flattens at
 ~0.5 and stops, which is the shape a shared global program would produce, though
 0.5 of 9 dimensions against a null of 4.05 is not much to rest a claim on.
 
+### What the ladder says about this row
+
+Run at ~2000/4000/8000 geometry cells with `--max-cells 8000` fixed, so `D` is
+constant within each ladder. The row splits cleanly in two.
+
+| statistic | drift across a 4× cloud | verdict |
+|---|---|---|
+| \|r\| of the leading shared direction with log depth | **0–3.5%** | keeps |
+| *which* PC holds the depth axis | identical at every size | keeps |
+| fraction of that PC occupied by the axis | 0–4% | keeps |
+| λ₁ against its null (the verdict, not the value) | stable, always outside | keeps |
+| concentration `d²/Σλ²` | 2.5–16% | usable |
+| shared dimension count `k` | 7–15%, but 35 → 23 on seurat | read as "many/few", not as a number |
+| the overlap curve at a fixed hop | **8–36%**, monotone | within-run shape only |
+
+The depth diagnostics are the most stable numbers in the project — pancreas
+reads 0.83 at all three cloud sizes, and seurat's depth axis is PC3 at all three,
+so the one genuinely surprising finding is also the most reproducible one.
+
+The overlap curve fails, and two attempted fixes both failed. Calibrating the
+x-axis in distance rather than hops makes it *worse* (34% drift at a fixed
+radius against 21% at a fixed hop), which rules out the hop axis as the cause.
+The cause is the basis neighbourhood: `k = 8d` is a fixed count, so it shrinks
+physically as the cloud densifies and the tangent estimates get more local.
+Replacing it with a constant *fraction* of the cloud — the correction that took
+`local-pca` from 24–46% drift down to 3–6% — over-corrects, drifting *up* 27%
+where the fixed count drifts down 32%. Overlap depends on the neighbourhood
+radius relative to the manifold's curvature scale, and neither a count nor a
+fraction pins that. The simpler option is kept and the limitation is printed
+next to the table.
+
 ### The shared subspace itself
 
 `M = (1/N) Σ Pᵢ`, the mean of the tangent projectors, is D×D with `tr(M) = d`.

@@ -194,6 +194,11 @@ fn num(x: f64, digits: usize) -> String {
     }
 }
 
+/// A JSON array body from a slice of numbers.
+fn join_nums(v: &[f64]) -> String {
+    v.iter().map(|x| num(*x, 6)).collect::<Vec<_>>().join(",")
+}
+
 /// Escape a string for a JSON string literal. Paths are user input and may
 /// contain either character.
 fn jstr(s: &str) -> String {
@@ -336,6 +341,34 @@ fn main() -> Result<()> {
         ricci::curvature_summary(&kappa, args.ricci_cut),
     ];
 
+    // Computed before the format match: the text table and the JSON have to be
+    // the same numbers, and these need the cloud and the counts, which the JSON
+    // branch would otherwise not reach for.
+    let tstats = tangent.as_ref().map(|t| {
+        let k = t.shared_dims();
+        let depth: Vec<f64> = cloud
+            .rows
+            .iter()
+            .map(|&r| counts.totals[r].max(1.0).ln())
+            .collect();
+        let proj = |c: usize| -> Vec<f64> {
+            (0..cloud.len())
+                .map(|i| (0..t.dim).map(|j| cloud.coords.read(i, j) * t.vectors.read(j, c)).sum())
+                .collect()
+        };
+        let dir_r: Vec<f64> = (0..t.vectors.ncols().min(k.max(1)).min(8))
+            .map(|c| pearson(&proj(c), &depth).abs())
+            .collect();
+        let pc_r: Vec<f64> = (0..embed_k)
+            .map(|c| {
+                let v: Vec<f64> = (0..cloud.len()).map(|i| cloud.coords.read(i, c)).collect();
+                pearson(&v, &depth).abs()
+            })
+            .collect();
+        let axis: Vec<f64> = (0..t.dim).map(|j| t.vectors.read(j, 0).powi(2)).collect();
+        (k, dir_r, pc_r, axis, t.contamination(k))
+    });
+
     match args.format {
         Format::Txt => {
             println!(
@@ -398,14 +431,18 @@ fn main() -> Result<()> {
                      {null:.2}{warn}):"
                 );
                 println!(
-                    "{:>8} {:>9} {:>9} {:>9} {:>8}",
-                    "hops", "pairs", "shared", "excess", "frac"
+                    "  (shape only -- these values are not comparable across \
+                     --geom-cells settings)"
+                );
+                println!(
+                    "{:>8} {:>9} {:>9} {:>9} {:>9} {:>8}",
+                    "hops", "<r>", "pairs", "shared", "excess", "frac"
                 );
                 for p in curve.iter() {
                     let h = if p.hops >= 10 { format!(">={}", p.hops) } else { p.hops.to_string() };
                     println!(
-                        "{h:>8} {:>9} {:>9.2} {:>9.2} {:>8.3}",
-                        p.pairs, p.shared, p.excess, p.frac
+                        "{h:>8} {:>9.2} {:>9} {:>9.2} {:>9.2} {:>8.3}",
+                        p.mean_r, p.pairs, p.shared, p.excess, p.frac
                     );
                 }
                 if !t.spectrum.is_empty() {
@@ -432,43 +469,26 @@ fn main() -> Result<()> {
                         .map(|l| format!("{l:>6.3}"))
                         .collect();
                     println!("  null    {}", nx.join(" "));
-                    let k = t.shared_dims();
                     println!(
-                        "  shared subspace: {k} of {} directions beat their own rank's null \
+                        "  shared subspace: {} of {} directions beat their own rank's null \
                          over {} draws (p < {:.2} each)",
+                        t.shared_dims(),
                         t.dim,
                         tangent::NULL_DRAWS,
                         1.0 / (tangent::NULL_DRAWS + 1) as f64
                     );
 
-                    // Are these directions technical? Library size, ambient RNA
-                    // and cell cycle all vary *inside* every region, so they are
-                    // exactly what a shared-direction detector finds first. The
-                    // sign of an eigenvector is arbitrary, hence |r|.
-                    let depth: Vec<f64> = cloud
-                        .rows
-                        .iter()
-                        .map(|&r| counts.totals[r].max(1.0).ln())
-                        .collect();
-                    let nvec = t.vectors.ncols().min(k.max(1)).min(8);
-                    let rs: Vec<String> = (0..nvec)
-                        .map(|c| {
-                            let proj: Vec<f64> = (0..cloud.len())
-                                .map(|i| {
-                                    (0..t.dim)
-                                        .map(|j| cloud.coords.read(i, j) * t.vectors.read(j, c))
-                                        .sum()
-                                })
-                                .collect();
-                            format!("{:.2}", pearson(&proj, &depth).abs())
-                        })
-                        .collect();
-                    println!("  |r| of shared dirs with log total counts: {}", rs.join(" "));
+                    let (k, dir_r, pc_r, axis, cont) = tstats.as_ref().expect("tangent");
+                    let k = *k;
+                    let f2 = |v: &f64| format!("{v:.2}");
+                    println!(
+                        "  |r| of shared dirs with log total counts: {}",
+                        dir_r.iter().map(f2).collect::<Vec<_>>().join(" ")
+                    );
 
                     // Which PCs the technical axis actually lives in. A global
                     // correlation says depth is present; this says where.
                     let npc = embed_k.min(12);
-                    let cont = t.contamination(k);
                     let cell = |v: f64| format!("{v:>5.2}");
                     println!("\n  per-PC contamination (first {npc} PCs):");
                     println!(
@@ -476,32 +496,17 @@ fn main() -> Result<()> {
                         "PC",
                         (1..=npc).map(|j| format!("{j:>5}")).collect::<Vec<_>>().join("")
                     );
-                    println!(
-                        "    {:<12}{}",
-                        "|r| depth",
-                        (0..npc)
-                            .map(|c| {
-                                let v: Vec<f64> =
-                                    (0..cloud.len()).map(|i| cloud.coords.read(i, c)).collect();
-                                cell(pearson(&v, &depth).abs())
-                            })
-                            .collect::<Vec<_>>()
-                            .join("")
-                    );
-                    println!(
-                        "    {:<12}{}",
-                        "depth axis",
-                        (0..npc)
-                            .map(|j| cell(t.vectors.read(j, 0).powi(2)))
-                            .collect::<Vec<_>>()
-                            .join("")
-                    );
-                    println!(
-                        "    {:<12}{}",
-                        format!("shared({k})"),
-                        (0..npc).map(|j| cell(cont[j])).collect::<Vec<_>>().join("")
-                    );
-                    let r1: f64 = rs.first().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                    for (label, vals) in
+                        [("|r| depth", pc_r), ("depth axis", axis), ("shared", cont)]
+                    {
+                        let name = if label == "shared" { format!("shared({k})") } else { label.to_string() };
+                        println!(
+                            "    {:<12}{}",
+                            name,
+                            (0..npc).map(|j| cell(vals[j])).collect::<Vec<_>>().join("")
+                        );
+                    }
+                    let r1 = dir_r.first().copied().unwrap_or(0.0);
                     if r1 > 0.5 {
                         println!(
                             "  WARNING: the leading shared direction is library size \
@@ -551,7 +556,7 @@ fn main() -> Result<()> {
                 .collect();
             let head = spec.eigenvalues.iter().take(50);
             println!(
-                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}],"local_pca":[{}],"tangent_overlap":[{}],"tangent_spectrum":[{}]}}"#,
+                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}],"local_pca":[{}],"tangent_overlap":[{}],"tangent_spectrum":[{}],"tangent_null":[{}],"tangent_shared_dims":{},"tangent_depth_r":[{}],"tangent_pc_depth_r":[{}],"tangent_depth_axis":[{}],"tangent_contamination":[{}]}}"#,
                 jstr(&args.path),
                 spec.n,
                 spec.p,
@@ -604,8 +609,9 @@ fn main() -> Result<()> {
                     .curve
                     .iter()
                     .map(|p| format!(
-                        r#"{{"hops":{},"pairs":{},"shared":{},"excess":{},"frac":{}}}"#,
+                        r#"{{"hops":{},"mean_r":{},"pairs":{},"shared":{},"excess":{},"frac":{}}}"#,
                         p.hops,
+                        num(p.mean_r, 6),
                         p.pairs,
                         num(p.shared, 6),
                         num(p.excess, 6),
@@ -618,7 +624,18 @@ fn main() -> Result<()> {
                     .iter()
                     .map(|l| num(*l, 6))
                     .collect::<Vec<_>>()
-                    .join(","))
+                    .join(",")),
+                tangent.as_ref().map_or(String::new(), |t| t
+                    .null_spectrum
+                    .iter()
+                    .map(|l| num(*l, 6))
+                    .collect::<Vec<_>>()
+                    .join(",")),
+                tstats.as_ref().map_or(0, |s| s.0),
+                tstats.as_ref().map_or(String::new(), |s| join_nums(&s.1)),
+                tstats.as_ref().map_or(String::new(), |s| join_nums(&s.2)),
+                tstats.as_ref().map_or(String::new(), |s| join_nums(&s.3)),
+                tstats.as_ref().map_or(String::new(), |s| join_nums(&s.4))
             );
         }
     }

@@ -44,6 +44,24 @@
 //! arithmetic, not evidence. The informative part of the curve is its far end:
 //! the floor is how many directions genuinely survive across the whole cloud.
 //!
+//! ## The curve is a within-run shape; the depth rows are cross-run numbers
+//!
+//! Measured across clouds of 2000/4000/8000 cells, this row splits cleanly.
+//!
+//! **Stable, and comparable between runs:** the correlation of the leading
+//! shared direction with log depth (0-3.5% drift on four datasets), *which* PC
+//! holds the depth axis (identical at every size, including the one dataset
+//! where it is not PC1), the fraction of that PC it occupies (0-4%), and the
+//! null verdict.
+//!
+//! **Not comparable between runs:** the overlap curve itself. It falls 8-36%
+//! across a 4x cloud on every dataset. Calibrating the x-axis in distance
+//! rather than hops does not fix it -- at a fixed radius the drift is 34%,
+//! worse than at a fixed hop -- because the cause is the basis neighbourhood
+//! shrinking physically as the cloud densifies, not the hop axis. Read the
+//! curve's shape within one run, and do not compare its values across
+//! `--geom-cells` settings.
+//!
 //! There is also a ceiling, in the same spirit as Eckmann-Ruelle in `corrdim`.
 //! The null is `d^2/D`, so the measurement only has room when `d/D` is small.
 //! At d = 14 in a 29-dimensional embedding the null is 6.8 of 14 -- half the
@@ -186,7 +204,15 @@ impl Tangent {
 /// One distance bin of the overlap curve.
 pub struct OverlapPoint {
     /// Graph distance in k-NN hops. `hops == MAX_HOPS` means "at least this".
+    ///
+    /// Not comparable across cloud sizes: a denser graph reaches less far per
+    /// hop, so the same bin is a shorter distance. Measured across clouds of
+    /// 2000/4000/8000 the overlap at a fixed hop count fell by 8-36% on every
+    /// dataset for that reason alone. Read `mean_r` instead when comparing runs.
     pub hops: usize,
+    /// Mean Euclidean distance between the pairs in this bin -- the hop axis in
+    /// the data's own units, and the one that is comparable between runs.
+    pub mean_r: f64,
     pub pairs: usize,
     /// Mean `tr(P_x P_y)`: shared dimensions, including the chance baseline.
     pub shared: f64,
@@ -230,6 +256,14 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
     // points is noise unless k is comfortably bigger than d, and the shared
     // graph is only 15-NN. Passing that in fitted 21-dimensional subspaces
     // through 16 points, and silently returned nothing whenever d >= 15.
+    // A fixed count, which is what k-NN local PCA normally does. A fixed
+    // *fraction* of the cloud was tried -- the correction that took
+    // `local-pca`'s drift from 24-46% to 3-6% -- and it does not transfer:
+    // fixed-count overlap drifts down 32% across a 4x cloud, fixed-fraction
+    // drifts *up* 27%, and the truth is somewhere between with no simple rule
+    // reaching it. Overlap depends on the neighbourhood radius relative to the
+    // manifold's curvature scale, which neither a count nor a fraction pins.
+    // The simpler of two equally-wrong options, with the limitation documented.
     let k = (8 * d).clamp(64, 256).min(m - 2);
     if k <= d {
         return empty();
@@ -250,6 +284,7 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
     let null = (d * d) as f64 / dim as f64;
 
     let mut sum = vec![0.0f64; MAX_HOPS + 1];
+    let mut dsum = vec![0.0f64; MAX_HOPS + 1];
     let mut cnt = vec![0usize; MAX_HOPS + 1];
     for a in 0..centres.len() {
         for b in (a + 1)..centres.len() {
@@ -259,6 +294,7 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
             }
             let bin = h.min(MAX_HOPS);
             sum[bin] += frobenius_overlap(&bases[a], &bases[b]);
+            dsum[bin] += c.dist(centres[a], centres[b]);
             cnt[bin] += 1;
         }
     }
@@ -271,6 +307,7 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
             let shared = sum[h] / cnt[h] as f64;
             OverlapPoint {
                 hops: h,
+                mean_r: dsum[h] / cnt[h] as f64,
                 pairs: cnt[h],
                 shared,
                 excess: shared - null,

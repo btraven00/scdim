@@ -50,10 +50,19 @@ Two traps that have cost time twice each:
 
 ## Tangent overlap follow-ups
 
-- [ ] **Run the ladder on it.** Every other statistic here was validated at
-      2000/4000/8000 geometry cells; this one has not been, and the hop bins are
-      the obvious thing to drift (a denser graph means more hops to cross the
-      same distance).
+- [x] ~~**Run the ladder on it.**~~ Done. The depth diagnostics pass with 0-4%
+      drift and the axis PC is identical at every cloud size; the overlap curve
+      fails at 8-36% and is now labelled shape-only. Two fixes were tried and
+      both failed -- a distance-calibrated x-axis is worse (34%), and a
+      fixed-fraction basis neighbourhood over-corrects (+27% where fixed-count
+      is -32%).
+- [ ] **A radius-based basis neighbourhood** is the only remaining idea for
+      making the overlap curve comparable across runs: fix the physical radius
+      rather than the point count, so the tangent estimate is smoothed over the
+      same amount of manifold regardless of density. The cost is a variable
+      point count per centre, which is bad for subspace estimation in sparse
+      regions -- possibly fatal. Only worth trying if the curve is ever needed
+      as a number rather than a shape.
 - [x] ~~**A permutation null on the mean projector.**~~ Done. Every eigenvalue
       is tested against its own rank's maximum over 20 random-frame ensembles.
       All four datasets have 11-31 shared directions, which overturned the
