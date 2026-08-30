@@ -67,6 +67,60 @@ const MAX_HOPS: usize = 10;
 /// for the measurement to say much.
 pub const NULL_WARN: f64 = 0.3;
 
+/// Everything the tangent pass produces.
+pub struct Tangent {
+    /// Overlap against graph distance.
+    pub curve: Vec<OverlapPoint>,
+    /// `d^2/D`: shared dimensions between two *random* subspaces. The baseline
+    /// for `OverlapPoint::excess`.
+    pub null: f64,
+    /// Tangent dimension used.
+    pub d: usize,
+    /// Embedding dimension.
+    pub dim: usize,
+    /// Eigenvalues of the mean projector `M = (1/N) sum P_i`, descending.
+    ///
+    /// Eigenvalue j is the fraction of regions whose tangent space contains
+    /// direction j: 1 means every region varies along it, 0 means none does.
+    /// `tr(M) = d` always, so a completely unstructured cloud spreads them flat
+    /// at `d/D` -- **that is the chance level for this spectrum, not `d^2/D`**,
+    /// which is the chance level for the pairwise overlap. The two are easy to
+    /// confuse and differ by a factor of d.
+    ///
+    /// This is Flury's Common Principal Components (1984) applied to local
+    /// tangent spaces: the leading eigenvectors span the subspace every region
+    /// shares, and the geometry needs no clustering to find it.
+    ///
+    /// No null test is attached. A permutation null on the top eigenvalue would
+    /// be the honest way to call one significant, and is not done -- read the
+    /// profile against `d/D` and treat a small excess as nothing.
+    pub spectrum: Vec<f64>,
+}
+
+impl Tangent {
+    /// Chance level for one eigenvalue of the mean projector.
+    pub fn chance(&self) -> f64 {
+        self.d as f64 / self.dim as f64
+    }
+
+    /// How many directions the shared structure spreads over:
+    /// `(sum lambda)^2 / sum lambda^2`, the same participation ratio
+    /// `local-pca` uses, and bounded by `[d, D]`.
+    ///
+    /// At the lower bound every region shares the *same* d directions -- one
+    /// common tangent space. At the upper bound the regions between them cover
+    /// the embedding evenly and share nothing. It needs no threshold, which is
+    /// why it is the headline rather than a count of eigenvalues above a cut.
+    pub fn concentration(&self) -> f64 {
+        let sq: f64 = self.spectrum.iter().map(|l| l * l).sum();
+        if sq > 0.0 {
+            (self.d as f64).powi(2) / sq
+        } else {
+            f64::NAN
+        }
+    }
+}
+
 /// One distance bin of the overlap curve.
 pub struct OverlapPoint {
     /// Graph distance in k-NN hops. `hops == MAX_HOPS` means "at least this".
@@ -91,15 +145,18 @@ pub struct OverlapPoint {
 /// `d` is the tangent dimension to use, the same for every point so the numbers
 /// are comparable -- take it from `local-pca`'s dip. Returns the curve and the
 /// null `d^2/D`.
-pub fn tangent_overlap(
-    c: &Cloud,
-    nbr: &[Vec<(f64, usize)>],
-    d: usize,
-) -> (Vec<OverlapPoint>, f64) {
+pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangent {
     let (m, dim) = (c.len(), c.coords.ncols());
     let d = d.clamp(1, dim.saturating_sub(1));
+    let empty = || Tangent {
+        curve: Vec::new(),
+        null: 0.0,
+        d: 0,
+        dim,
+        spectrum: Vec::new(),
+    };
     if m < 32 || d == 0 || nbr.len() != m {
-        return (Vec::new(), 0.0);
+        return empty();
     }
     // Two different neighbourhoods, deliberately. Hops are counted on `nbr`,
     // the shared k-NN graph every other row uses, so "graph distance" means the
@@ -110,11 +167,11 @@ pub fn tangent_overlap(
     // through 16 points, and silently returned nothing whenever d >= 15.
     let k = (8 * d).clamp(64, 256).min(m - 2);
     if k <= d {
-        return (Vec::new(), 0.0);
+        return empty();
     }
     let wide = c.knn(k);
     if wide.is_empty() {
-        return (Vec::new(), 0.0);
+        return empty();
     }
 
     let stride = m.div_ceil(MAX_CENTRES).max(1);
@@ -156,7 +213,28 @@ pub fn tangent_overlap(
             }
         })
         .collect();
-    (curve, null)
+
+    // M = mean of the projectors. tr(M) = d by construction, so its spectrum
+    // says how those d dimensions are distributed over the embedding rather
+    // than how many there are.
+    let n = bases.len() as f64;
+    let mut mp = Mat::<f64>::zeros(dim, dim);
+    for u in &bases {
+        for a in 0..dim {
+            for b in 0..=a {
+                let v: f64 = (0..d).map(|t| u.read(a, t) * u.read(b, t)).sum();
+                mp.write(a, b, mp.read(a, b) + v / n);
+                if a != b {
+                    mp.write(b, a, mp.read(a, b));
+                }
+            }
+        }
+    }
+    let evd = SelfAdjointEigendecomposition::new(mp.as_ref(), Side::Lower);
+    let mut spectrum: Vec<f64> = (0..dim).map(|i| evd.s().column_vector().read(i)).collect();
+    spectrum.reverse();
+
+    Tangent { curve, null, d, dim, spectrum }
 }
 
 /// Orthonormal basis for the `d` leading directions of the neighbourhood, in

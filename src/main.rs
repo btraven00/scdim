@@ -291,12 +291,12 @@ fn main() -> Result<()> {
     let tangent = args.tangent.then(|| {
         pr.begin("tangent-space overlap");
         let d = localpca::summary(&lpca, embed_k).rank.max(2);
-        let (curve, null) = timed(|| tangent::tangent_overlap(&cloud, &knn, d)).0;
+        let t = timed(|| tangent::tangent_overlap(&cloud, &knn, d)).0;
         pr.ok(
             "tangent-space overlap",
-            &format!("{} hop bins, d = {d}, null = {null:.2}", curve.len()),
+            &format!("{} hop bins, d = {}, null = {:.2}", t.curve.len(), t.d, t.null),
         );
-        (curve, null, d)
+        t
     });
     pr.finish();
 
@@ -361,8 +361,9 @@ fn main() -> Result<()> {
                     p.n, p.mean_r2, p.d
                 );
             }
-            if let Some((curve, null, d)) = &tangent {
-                let warn = if *null > tangent::NULL_WARN * *d as f64 {
+            if let Some(t) = &tangent {
+                let (curve, null, d) = (&t.curve, t.null, t.d);
+                let warn = if null > tangent::NULL_WARN * d as f64 {
                     " -- NULL IS LARGE: d/D leaves little room, read the excess column \
                      with that in mind"
                 } else {
@@ -381,6 +382,28 @@ fn main() -> Result<()> {
                     println!(
                         "{h:>8} {:>9} {:>9.2} {:>9.2} {:>8.3}",
                         p.pairs, p.shared, p.excess, p.frac
+                    );
+                }
+                if !t.spectrum.is_empty() {
+                    // tr(M) = d, so a structureless cloud spreads the spectrum
+                    // flat at d/D. That, not the pairwise d^2/D, is the chance
+                    // level here.
+                    println!(
+                        "\nShared tangent subspace (mean projector; chance level d/D = {:.3}, \
+                         concentration {:.1} of [{d}, {}]):",
+                        t.chance(),
+                        t.concentration(),
+                        t.dim
+                    );
+                    let top: Vec<String> =
+                        t.spectrum.iter().take(10).map(|l| format!("{l:>6.3}")).collect();
+                    println!("  lambda  {}", top.join(" "));
+                    // Not "how many exceed chance": tr(M) = d makes the mean
+                    // of the spectrum exactly d/D, so about half always do.
+                    println!(
+                        "  lambda_1 = {:.2}x chance; {} directions above 2x",
+                        t.spectrum[0] / t.chance(),
+                        t.spectrum.iter().filter(|&&l| l > 2.0 * t.chance()).count()
                     );
                 }
             }
@@ -423,7 +446,7 @@ fn main() -> Result<()> {
                 .collect();
             let head = spec.eigenvalues.iter().take(50);
             println!(
-                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}],"local_pca":[{}],"tangent_overlap":[{}]}}"#,
+                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}],"local_pca":[{}],"tangent_overlap":[{}],"tangent_spectrum":[{}]}}"#,
                 jstr(&args.path),
                 spec.n,
                 spec.p,
@@ -472,7 +495,8 @@ fn main() -> Result<()> {
                     ))
                     .collect::<Vec<_>>()
                     .join(","),
-                tangent.as_ref().map_or(String::new(), |(curve, _, _)| curve
+                tangent.as_ref().map_or(String::new(), |t| t
+                    .curve
                     .iter()
                     .map(|p| format!(
                         r#"{{"hops":{},"pairs":{},"shared":{},"excess":{},"frac":{}}}"#,
@@ -482,6 +506,12 @@ fn main() -> Result<()> {
                         num(p.excess, 6),
                         num(p.frac, 6)
                     ))
+                    .collect::<Vec<_>>()
+                    .join(",")),
+                tangent.as_ref().map_or(String::new(), |t| t
+                    .spectrum
+                    .iter()
+                    .map(|l| num(*l, 6))
                     .collect::<Vec<_>>()
                     .join(","))
             );

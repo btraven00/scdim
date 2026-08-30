@@ -54,6 +54,29 @@ Two traps that have cost time twice each:
       2000/4000/8000 geometry cells; this one has not been, and the hop bins are
       the obvious thing to drift (a denser graph means more hops to cross the
       same distance).
+- [ ] **A permutation null on the top eigenvalue of the mean projector.**
+      Currently there is no test: "2× chance" is a rule of thumb. Randomising
+      the tangent bases and re-accumulating M gives the null distribution of λ₁
+      directly, and it is the difference between "there is a shared direction"
+      and "λ₁ is 0.9, as it would be for d/D = 0.48 anyway".
+- [ ] **Is the shared direction technical?** The leading shared direction is
+      most likely library size, ambient RNA or cell cycle, since those vary
+      inside every region. Testing it is the same computation as the depth
+      confound row below: project cells onto the top eigenvector and correlate
+      with `log total_counts`. If it is depth, this becomes a label-free
+      technical-axis detector, and projecting it out is a batch correction that
+      needs no batch labels. Trap: cell cycle is shared *and* is biology, so
+      "shared" and "technical" are not the same set. GSE132188 carries
+      `proliferation`, `G2M_score` and `S_score`, which makes it the place to
+      check before trusting any subtraction.
+- [ ] **NMF for naming individual programs.** With 4-7 shared directions the
+      subspace has no canonical basis, and non-negativity is the standard way to
+      pick one. NMF on the *counts*, not on the tangent spaces -- those are
+      signed and NMF cannot touch them. Then push each program's gene vector
+      into score space and test its projection onto the leading eigenvectors of
+      M: high = shared/activity, low = identity. That is Kotliar's cNMF split
+      with a geometric criterion instead of a usage-across-clusters one. Blocked
+      on the same prerequisite as everything gene-facing.
 - [ ] **The label version.** GSE132188 ships six lineage annotations. One
       tangent space per annotated group gives a pairwise overlap matrix, which
       answers "do the Alpha and Beta branches share directions" directly. Needs

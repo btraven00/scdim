@@ -345,6 +345,49 @@ stay there — distant regions share nothing above chance. zheng2017 flattens at
 ~0.5 and stops, which is the shape a shared global program would produce, though
 0.5 of 9 dimensions against a null of 4.05 is not much to rest a claim on.
 
+### The shared subspace itself
+
+`M = (1/N) Σ Pᵢ`, the mean of the tangent projectors, is D×D with `tr(M) = d`.
+Eigenvalue j is the fraction of regions whose tangent space contains direction
+j: 1 means every region varies along it, 0 means none does. The leading
+eigenvectors span the subspace every region shares — Flury's Common Principal
+Components (1984) applied to local tangent spaces, and it needs no clustering to
+find them.
+
+**The chance level here is d/D, not d²/D.** Since the trace is fixed at d, an
+unstructured cloud spreads the spectrum flat at d/D. The two nulls differ by a
+factor of d and are easy to confuse — d²/D is the baseline for the *pairwise*
+overlap above. For the same reason, "how many eigenvalues exceed chance" is
+vacuous: the mean of the spectrum *is* the chance level, so about half always do.
+The headline is instead the participation ratio `d²/Σλ²`, bounded by [d, D] — at
+the lower bound every region shares the same d directions, at the upper bound
+they cover the embedding evenly and share nothing.
+
+| dataset | d | D | chance | λ₁ | λ₁/chance | above 2× | concentration | position in [d, D] |
+|---|---|---|---|---|---|---|---|---|
+| pancreas | 10 | 49 | 0.204 | 0.897 | **4.4×** | **7** | 27.7 of [10, 49] | 0.45 |
+| seurat PBMC | 21 | 76 | 0.276 | 0.874 | 3.2× | 4 | 57.0 of [21, 76] | 0.65 |
+| zheng2017 | 9 | 20 | 0.450 | 0.886 | 2.0× | 0 | 16.0 of [9, 20] | 0.64 |
+| Norman | 14 | 29 | 0.483 | 0.958 | 2.0× | 0 | 23.7 of [14, 29] | 0.65 |
+
+Every dataset has a leading direction present in 87–96% of regions. Whether that
+means anything depends on d/D: the pancreas and seurat have room to see it
+(4.4× and 3.2× chance, with 7 and 4 directions clearing twice chance), while
+zheng and Norman have chance levels near 0.5 and nothing clearing 2× — their
+λ₁ ≈ 0.9 is largely what a d/D of 0.48 buys you for free.
+
+So the shared subspace is **multi-dimensional where it is measurable at all**,
+which is the opposite of what the pairwise floors seemed to say. Those readings
+were wrong twice over: they used the far bins rather than the all-pairs mean that
+Σλ² actually equals, and they inferred a spectrum shape from one scalar.
+
+Two things this does not yet support. There is **no null test** on the top
+eigenvalue — a permutation would be the honest way to call a direction real, and
+2× chance is a rule of thumb, not a test. And a subspace is not a basis: with 4–7
+shared directions, any rotation within that span is equally shared, so naming
+individual programs needs an extra criterion (non-negativity, varimax, ICA) on
+top of the geometry.
+
 seurat PBMC's excursion to −1.15 is worth noting: the null assumes *independent*
 random subspaces, and tangent spaces on the same manifold at maximum separation
 are not independent — they are constrained to be jointly consistent with one
