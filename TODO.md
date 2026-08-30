@@ -114,6 +114,21 @@ Two traps that have cost time twice each:
       That turns "these regions share 2 directions" into "they share *these two
       programs*", which is the version a biologist can act on.
 
+## The promising one
+
+- [ ] **Decompose a covariate into between- and within-region parts.** Design,
+      evidence and falsification plan written up in
+      [notes.md](notes.md#follow-up-decomposing-a-covariate-into-between--and-within-region-parts).
+      The observation: a tangent space only sees variation *inside* a
+      neighbourhood, so it separates "this PC correlates with depth because the
+      cell types it splits carry different amounts of RNA" from "this PC carries
+      a within-type technical gradient". Those need opposite treatment and a
+      global correlation cannot tell them apart. Blocked on `scdim` reading
+      `obs`, which is a deliberate scope decision. Validation data is already on
+      disk: GSE132188's six lineage labels give ground truth for the
+      between-part, and its cell-cycle scores are the sharp test, since cycle is
+      shared *and* is biology.
+
 ## Diagnostics not built
 
 Ordered by value per line. All reuse state already computed.
@@ -148,13 +163,12 @@ Ordered by value per line. All reuse state already computed.
 
 ## Known limits, not yet acted on
 
-- [ ] **`corr-dim` cannot work on atlas-shaped data and should probably say so
-      louder.** The Eckmann-Ruelle ceiling grows as 2·log₁₀N: four times the
-      cells bought 1.2 of ceiling, and measuring D ≈ 20 legitimately would need
-      ~10¹⁰ cells. It is a trajectory-regime estimator (D 2–5, which its unit
-      tests cover) being run on data that is nowhere near that. Consider
-      declining to print a number above the ceiling rather than printing one and
-      shouting.
+- [x] ~~**`corr-dim` cannot work on atlas-shaped data.**~~ Removed. It was above
+      its own Eckmann-Ruelle ceiling on every dataset ever run, i.e. always
+      invalid, and four times the cells bought 1.2 of ceiling. Reasoning kept in
+      notes.md so it is not re-added; the estimator itself was correct and its
+      unit tests passed, in the D 2-5 regime that single-cell data is nowhere
+      near.
 - [ ] **Every dimension row is an upper bound at these cell counts.** Even at
       k = 1024, an eighth of an 8000-cell cloud, the local-PCA walk has not
       stopped falling. Two estimators with unrelated failure modes agree on

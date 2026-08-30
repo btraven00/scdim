@@ -23,15 +23,14 @@ tracy-widom      29            stopped at component 30: TW1 statistic 2.068, p =
 mp-edge          31            eigenvalues above lambda+ = 2.9221
 twonn            18   17.699   d = 17.70 (95% CI 16.93-18.50), 1967/1987 ratios after 1% trim
 twonn-plateau    14   13.784   d = 13.78 over N = 62..248 (3 levels within 10%)
-corr-dim         15   15.106   D = 15.11 over 7 scales flat to 15% -- AT THE CEILING: D <= 6.6
 local-pca        14   14.234   d = 14.23 at the dip (k=256, r=16.79); 16.00 at k=16 -> 14.23 at k=256
 betti0            1    0.010   continuous: clumpiness 0.010, largest MST step 1.12x (< 2)
 fiedler           1    2.057   connected: lambda_1 = 2.64e-2, relative eigengap 2.06x at k = 2
 ricci-neg         3    0.192   3/1987 beyond -2.5 robust-z (42 beyond +2.5, ratio 0.07x); skew +0.192
 ```
 
-Followed by four tables: the lowest Laplacian eigenvalues, the correlation
-integral, the TwoNN scale analysis, and the local-PCA walk. `--format json`
+Followed by three tables: the lowest Laplacian eigenvalues, the TwoNN scale
+analysis, and the local-PCA walk. `--format json`
 puts the same numbers plus the raw spectra on one line for `jq`. Progress goes to stderr, so the JSON
 stays pipeable; `-q` silences it.
 
@@ -45,9 +44,9 @@ threshold has already decided them. It is blank for `tracy-widom` and `mp-edge`,
 which really are counting eigenvalues.
 
 The middle column is not one quantity. Rows 1-2 are a **rank** (linear
-components above the noise floor), rows 3-6 are a **dimension** (of the
-manifold the cells lie on), row 7 is a **piece count**, row 8 is a **component
-count**, row 9 is a **cell count**. They are not comparable to each other and none of them is the number
+components above the noise floor), rows 3-5 are a **dimension** (of the
+manifold the cells lie on), row 6 is a **piece count**, row 7 is a **component
+count**, row 8 is a **cell count**. They are not comparable to each other and none of them is the number
 of cell types.
 
 | row | question | number |
@@ -56,15 +55,14 @@ of cell types.
 | `mp-edge` | same, asymptotic limit, no finite-size correction | rank |
 | `twonn` | intrinsic dimension from 1st/2nd neighbour ratios | dimension |
 | `twonn-plateau` | that estimate at the scale where it stops moving | dimension |
-| `corr-dim` | Grassberger-Procaccia slope of log C(r) | dimension |
 | `local-pca` | dimension of the local covariance, against neighbourhood size | dimension |
 | `betti0` | one connected manifold, or separated patches? | patches (+ clumpiness) |
 | `fiedler` | exact connected components, and how thin the bottleneck is | components (+ eigengap) |
 | `ricci-neg` | which cells sit on bottlenecks (extreme negative curvature)? | cells (+ tail skew) |
 
-Rows 3-9 run on the PCA scores truncated at the Tracy-Widom rank, not on the
+Rows 3-8 run on the PCA scores truncated at the Tracy-Widom rank, not on the
 gene matrix; in 2000 ambient dimensions the distances they need have
-concentrated away. The embedding is capped at 100 columns. All seven share one
+concentrated away. The embedding is capped at 100 columns. All six share one
 Gram matrix and one k-NN graph and run concurrently, so their reported times
 overlap.
 
@@ -92,9 +90,8 @@ piece or several" read `betti0`.
 
 **Every dimension row is an upper bound at these cell counts.** Measured on
 three datasets at clouds of 2000, 4000 and 8000 cells: `twonn` rises
-monotonically with the cloud (more cells, smaller r, more noise), `corr-dim` is
-above its ceiling at every size, and `local-pca` is still falling at the largest
-radius the ladder reaches — even at k = 1024, an eighth of the cloud. No scale
+monotonically with the cloud (more cells, smaller r, more noise) and `local-pca`
+is still falling at the largest radius the ladder reaches — even at k = 1024, an eighth of the cloud. No scale
 reachable here is free of the noise floor. See notes.md for the table.
 
 **`local-pca` reports the dip, not the ends.** The curve is noise-inflated at
@@ -104,9 +101,10 @@ sitting on. A radius whose estimate is pinned against `min(k, embed)` is
 excluded from the search — pinned levels are pinned *low* and would win it by
 construction.
 
-**`corr-dim` has a hard ceiling** of D <= 2·log₁₀ N (Eckmann-Ruelle). Above it
-the estimator returns something too small without failing. The row shouts when
-it is within 80% of the ceiling; treat those as a lower bound.
+**`corr-dim` was removed.** Grassberger-Procaccia needs roughly `D <= 2 log10 N`
+points (Eckmann-Ruelle), so measuring D ~ 20 would need ~10^10 cells. Measured
+here, four times the cells bought 1.2 of ceiling. It was above its own ceiling on
+every dataset ever run through it, i.e. always invalid. See notes.md.
 
 ## Flags
 
@@ -140,15 +138,6 @@ it is within 80% of the ceiling; treat those as a lower bound.
 
 ## Reading the tables
 
-**Correlation integral.** Only the shape of the `slope` column matters. Real
-data usually shows three regimes: high and falling at small r (the noise floor,
-which is full-rank), a middle minimum or plateau (the manifold, if any), and a
-rise at large r. The rise is not saturation — saturation drives the slope to
-zero as C → 1. It means that past the within-cluster diameter you start
-swallowing whole neighbouring clusters, so C(r) grows faster than a power law:
-the set is not self-similar and has no single dimension. Always read the slope
-against the ceiling in the `corr-dim` row.
-
 **Local PCA.** Same three regimes as the correlation integral, read off the
 covariance instead of the pair counts. `ceiling` is `min(k, embed)`: a k+1-point
 neighbourhood spans at most k directions, so a level at its ceiling has measured
@@ -173,8 +162,8 @@ a plateau resting only on the noisiest level is not one.
 - Facco, d'Errico, Rodriguez & Laio, Sci. Rep. **7**, 12140 (2017) — TwoNN and
   the decimation analysis.
 - Denti, `intRinsic`, J. Stat. Softw. (2023) — the reference `twonn_mle`.
-- Grassberger & Procaccia, Physica D **9**, 189 (1983); Eckmann & Ruelle,
-  Physica D **56**, 185 (1992) — the correlation integral and its ceiling.
+- Eckmann & Ruelle, Physica D **56**, 185 (1992) — the sample-size ceiling on
+  dimension estimation.
 - Zelnik-Manor & Perona, NIPS (2004) — self-tuning affinities.
 - Little, Maggioni & Rosasco, Appl. Comput. Harmon. Anal. **43**, 504 (2017) —
   multiscale SVD, the local-PCA walk.

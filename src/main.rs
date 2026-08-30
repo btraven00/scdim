@@ -3,7 +3,7 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use scdim::{
-    betti, corrdim, fiedler, geom, io, localpca, progress::Progress, rank, ricci, tangent, twonn,
+    betti, fiedler, geom, io, localpca, progress::Progress, rank, ricci, tangent, twonn,
 };
 
 #[derive(Parser)]
@@ -118,10 +118,6 @@ const PLATEAU_TOL: f64 = 0.10;
 
 /// Bulk-KS below this counts as a good MP fit (Chardes et al. §3.1).
 const KS_GOOD: f64 = 0.10;
-
-/// Correlation-dimension slopes are noisier than TwoNN's decimation levels, so
-/// the scaling range gets a looser flatness bound.
-const GP_TOL: f64 = 0.15;
 
 /// How far down the sorted MST weights to look for the patch-separating step,
 /// and how big that step has to be. 2.0x says the bridging edge must be twice
@@ -279,11 +275,10 @@ fn main() -> Result<()> {
     // The geometric diagnostics share the cloud read-only and do not talk
     // to each other, so they run concurrently. Each is internally parallel
     // too; rayon's work stealing sorts that out. Their reported times overlap.
-    pr.begin("geometry (7 diagnostics, in parallel)");
+    pr.begin("geometry (6 diagnostics, in parallel)");
     let mut mst = Default::default();
     let mut lap = Default::default();
     let mut kappa = Default::default();
-    let mut gp = Default::default();
     let mut nn: (Option<rank::Estimate>, f64) = Default::default();
     let mut scale = Default::default();
     let mut lpca = Default::default();
@@ -295,7 +290,6 @@ fn main() -> Result<()> {
                 ricci::node_curvature(&cloud, &knn, RICCI_ALPHA, args.ricci_metric.into())
             })
         });
-        s.spawn(|_| gp = timed(|| corrdim::correlation_curve(&cloud, 20)));
         s.spawn(|_| nn = timed(|| Some(twonn::two_nn(&cloud, args.twonn_trim, 0.95))));
         s.spawn(|_| {
             scale = timed(|| twonn::scale_analysis(&cloud, args.twonn_reps, args.twonn_trim))
@@ -309,12 +303,10 @@ fn main() -> Result<()> {
         kappa.1,
         &format!("{} cells, {:?} metric", kappa.0.len(), args.ricci_metric),
     );
-    pr.stage("  correlation integral", gp.1, &format!("{} points", gp.0 .1));
     pr.stage("  twonn scale analysis", scale.1, &format!("{} levels", scale.0.len()));
     pr.stage("  local pca", lpca.1, &format!("{} radii", lpca.0.len()));
     pr.stage("  twonn fit", nn.1, &format!("d = {}", nn.0.as_ref().expect("spawned").rank));
-    let (mst, lap, kappa, (gp, gp_n), scale, lpca) =
-        (mst.0, lap.0, kappa.0, gp.0, scale.0, lpca.0);
+    let (mst, lap, kappa, scale, lpca) = (mst.0, lap.0, kappa.0, scale.0, lpca.0);
     // Needs local-pca's dip for the tangent dimension, so it cannot join the
     // parallel block above.
     let tangent = args.tangent.then(|| {
@@ -334,7 +326,6 @@ fn main() -> Result<()> {
         rank::mp_edge(&spec),
         nn.0.expect("spawned"),
         twonn::plateau(&scale, PLATEAU_TOL),
-        corrdim::correlation_dimension(&gp, gp_n, GP_TOL),
         localpca::summary(&lpca, embed_k),
         betti::patch_count(&mst, MAX_PATCHES, MIN_MST_GAP),
         fiedler::fiedler(&lap, MAX_PATCHES),
@@ -400,11 +391,6 @@ fn main() -> Result<()> {
             }
             let lo: Vec<String> = lap.iter().take(8).map(|e| format!("{e:.3e}")).collect();
             println!("\nLaplacian spectrum (lowest 8): {}", lo.join("  "));
-            println!("\nCorrelation integral (Grassberger-Procaccia):");
-            println!("{:>10} {:>10} {:>8}", "r", "C(r)", "slope");
-            for p in &gp {
-                println!("{:>10.3} {:>10.2e} {:>8.2}", p.r, p.c, p.slope);
-            }
             println!("\nTwoNN scale analysis (Facco et al. 2017):");
             println!("{:>8} {:>10} {:>8}   {}", "N", "<r2>", "d", "spread");
             for p in &scale {
@@ -556,7 +542,7 @@ fn main() -> Result<()> {
                 .collect();
             let head = spec.eigenvalues.iter().take(50);
             println!(
-                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"correlation_integral":[{}],"scale_analysis":[{}],"local_pca":[{}],"tangent_overlap":[{}],"tangent_spectrum":[{}],"tangent_null":[{}],"tangent_shared_dims":{},"tangent_depth_r":[{}],"tangent_pc_depth_r":[{}],"tangent_depth_axis":[{}],"tangent_contamination":[{}]}}"#,
+                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"scale_analysis":[{}],"local_pca":[{}],"tangent_overlap":[{}],"tangent_spectrum":[{}],"tangent_null":[{}],"tangent_shared_dims":{},"tangent_depth_r":[{}],"tangent_pc_depth_r":[{}],"tangent_depth_axis":[{}],"tangent_contamination":[{}]}}"#,
                 jstr(&args.path),
                 spec.n,
                 spec.p,
@@ -573,16 +559,7 @@ fn main() -> Result<()> {
                 head.map(|e| num(*e, 6)).collect::<Vec<_>>().join(","),
                 lap.iter().take(40).map(|e| num(*e, 8)).collect::<Vec<_>>().join(","),
                 kappa.iter().map(|k| num(*k, 6)).collect::<Vec<_>>().join(","),
-                                gp.iter()
-                    .map(|p| format!(
-                        r#"{{"r":{},"c":{},"slope":{}}}"#,
-                        num(p.r, 6),
-                        num(p.c, 8),
-                        num(p.slope, 6)
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(","),
-                scale
+                                scale
                     .iter()
                     .map(|p| format!(
                         r#"{{"n":{},"mean_r2":{},"d":{},"spread":[{},{}]}}"#,

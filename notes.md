@@ -9,7 +9,7 @@ is the user-facing part; this is the working record.
 - [Marchenko-Pastur edge](#marchenko-pastur-edge)
 - [Why Sinkhorn's convergence flag is not the diagnostic](#why-sinkhorns-convergence-flag-is-not-the-diagnostic)
 - [TwoNN](#twonn) and [the scale analysis](#twonn-scale-analysis-decimation)
-- [Correlation dimension](#correlation-dimension)
+- [Correlation dimension: removed](#correlation-dimension-removed)
 - [Local PCA](#local-pca)
 - [Tangent-space overlap](#tangent-space-overlap)
 - [Betti-0 from the MST](#betti-0-from-the-mst)
@@ -19,6 +19,7 @@ is the user-facing part; this is the working record.
 - [Geometry in the signal subspace](#geometry-in-the-signal-subspace)
 - [Does a bigger cloud help?](#does-a-bigger-cloud-help)
 - [The trajectory case: GSE132188](#the-trajectory-case-gse132188)
+- [Follow-up: decomposing a covariate into between- and within-region parts](#follow-up-decomposing-a-covariate-into-between--and-within-region-parts)
 - [Measurements on labelled data](#measurements-on-labelled-data)
 - [Deferred: scwarp acceleration](#deferred-scwarp-acceleration)
 - [Candidates not implemented](#candidates-not-implemented)
@@ -165,39 +166,34 @@ a contradiction. The rise at large r says the density is uneven; cross-check
 against `betti0` and `fiedler`, and if those say connected then it is uneven
 density, not separated patches.
 
-## Correlation dimension
+## Correlation dimension: removed
+
+Grassberger-Procaccia was implemented, measured, and dropped. It is kept in the
+git history and the reasoning is here so it is not re-added.
 
 ```
-C(r) = 2/(N(N−1)) · #{i<j : ‖xᵢ−xⱼ‖ < r},   C(r) ~ r^D
+C(r) = 2/(N(N-1)) * #{i<j : ||xi - xj|| < r},   C(r) ~ r^D
 ```
 
-so D is the slope of log C against log r. Where TwoNN fits a parametric law to
-one neighbour ratio, this reads the scaling of the whole pair-distance
-distribution, which makes it the better instrument for continuous branching
-structure rather than discrete clusters. It will never return "the number of
-cell types"; it returns the dimension of the set the cells trace out.
+The estimator is correct and its unit tests passed: a filled 3-cube in R^20
+returned 3, a 1-D curve in R^10 returned 1. That is the regime it works in.
 
-Scales are placed so C is log-spaced from 1e-4 to 0.3 — every local slope then
-rests on a comparable number of pairs, and none sit in the saturated region
-where C → 1 forces the slope to zero. `corr-dim` reports the mean over the
-longest run of slopes flat to 15%, same whole-run criterion as the TwoNN
-plateau.
+It cannot work on single-cell data. Estimating D from N points needs roughly
+`D <= 2 log10 N` (Eckmann & Ruelle 1992), and above the ceiling the correlation
+integral has no scaling range left, so the estimator returns something too small
+without failing — the dangerous kind of wrong. The ceiling grows as log N:
+measured across clouds of 2000, 4000 and 8000 cells it moved 6.6 → 7.2 → 7.8,
+so **four times the cells bought 1.2 of ceiling**, and legitimately measuring
+D ≈ 20 would need ~10^10 cells.
 
-The sample-size ceiling is the thing to watch: estimating D from N points needs
-roughly D ≤ 2·log₁₀N (Eckmann & Ruelle 1992), so 1659 points give D ≤ 6.4.
-Above that the correlation integral has no scaling range left and the estimator
-returns something too small without failing, which is the dangerous kind of
-wrong. The ceiling is printed next to every estimate and the row shouts when
-the estimate is within 80% of it.
+Across every dataset ever run here it reported 13–21 against a ceiling of
+6.5–7.8 — always above it, therefore always invalid. A row that is structurally
+incapable of being right on the data the tool is for is worse than no row: it
+prints a plausible integer, and the warning next to it is easy to skip.
 
-On whole-atlas data hitting the ceiling is the expected outcome — the cloud is
-too high-dimensional for GP at any affordable sample size, and the ceiling
-grows as log N, so 10⁶ cells buys only D ≤ 12. Where it earns its keep is the
-trajectory case, D of order 2–5. The unit tests cover that regime: a filled
-3-cube in R²⁰ returns 3, a 1-D curve in R¹⁰ returns 1.
-
-Note the flat-run search can settle on the small-r noise floor when that is the
-longest flat stretch, which is what the ceiling warning is for.
+The Eckmann-Ruelle bound itself is still load-bearing elsewhere — it is the same
+shape of limit as `local-pca`'s `min(k, embed)` ceiling and the tangent row's
+`d^2/D` null, and it is why every dimension row here is an upper bound.
 
 ## Local PCA
 
@@ -1017,6 +1013,76 @@ a trajectory should be the D 2–5 regime its unit tests cover. It reports 18.2
 against a ceiling of 7.7 — still meaningless. A branching trajectory is not a
 low-dimensional object at the scales reachable; the branches live inside
 something ~20-dimensional.
+
+## Follow-up: decomposing a covariate into between- and within-region parts
+
+**Not built. This is the most promising thing the tangent work turned up and the
+design is recorded here so it does not have to be rediscovered.**
+
+### The observation it rests on
+
+A tangent space only sees variation *inside* a neighbourhood. A correlation
+between a PC score and a per-cell covariate sees everything, including the
+covariate differing between the populations that PC separates. So the two
+disagree exactly when a covariate has both kinds of structure — and depth does.
+
+Measured on seurat PBMC: PC1 correlates 0.58 with log total counts while holding
+**3%** of the local depth axis, which sits in PC3 at **0.66**. PC1's depth signal
+there is between-cell-type (monocytes carry more RNA than T cells); the
+within-type technical gradient is in PC3. Standard practice regresses out
+`nCount_RNA` and removes both, and the between-type part is arguably real
+biology — cell size and RNA content genuinely differ by type.
+
+Norman is the negative control that makes the reading safe: one cell line, so no
+between-type structure exists, and its depth axis is 95% PC1 exactly as it
+should be. And the dissociation is the most N-stable result in the project — the
+axis PC is identical at 2000, 4000 and 8000 cells on all four datasets.
+
+### The generalisation
+
+Nothing above is specific to depth. Given any per-cell covariate c —
+mitochondrial fraction, cell cycle score, doublet score, batch — split its
+relationship with the embedding into
+
+- **between**: the part carried by differences among the regions a PC separates;
+- **within**: the part that varies inside every region, which is the only
+  candidate for a technical axis.
+
+The output is a per-PC map saying which components to correct and which to leave
+alone. That is a decision nobody can currently make from a global correlation.
+
+### What it needs
+
+- `scdim` must read `obs`, which it deliberately never has. That is the scope
+  decision the whole idea hinges on; everything else is arithmetic already done.
+- The covariate has to reach the geometry: cells are strided twice (`--max-cells`
+  then `--geom-cells`), so `Cloud::rows` indexes back through `embed` to
+  `counts.x`. `totals` already makes that trip.
+
+### How to falsify it
+
+GSE132188 has everything needed and is already on disk.
+
+1. **Ground truth for the between-part.** Six lineage annotations. Compute the
+   per-lineage median depth. The between-component should track those medians;
+   the within-component should not. If it does not separate, the framing is
+   wrong.
+2. **The sharp test is cell cycle.** It is shared across regions *and* is real
+   biology, so it is the case where "shared ⇒ technical" must fail. The dataset
+   carries `proliferation`, `G2M_score` and `S_score`. If the method flags the
+   cycle axis as technical, that is a falsification, and better found early than
+   after someone subtracts it.
+3. **The negative control already passed**: Norman, one cell line, depth axis
+   95% PC1.
+
+### What it is not
+
+It is not a correction. See the argument against a `--deflate` mode in
+[TODO.md](TODO.md): the leading shared direction is only ~69% depth by variance,
+the shared subspace contains cell cycle, and where a direction tracks a covariate
+you already measured, regressing on the covariate beats projecting out an
+estimated direction. The value here is *deciding which PCs are contaminated and
+by which kind of structure*, not doing the removal.
 
 ## Measurements on labelled data
 
