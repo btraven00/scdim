@@ -63,6 +63,9 @@ const MAX_CENTRES: usize = 256;
 /// Hop bins; the last one is a `>=` bucket.
 const MAX_HOPS: usize = 10;
 
+/// Leading shared directions retained for inspection.
+pub const TOP_VECS: usize = 8;
+
 /// Draws of the whole ensemble used to build the `lambda_1` null. The
 /// statistic is an extremum, so what matters is the max over draws; 20 gives
 /// a one-in-twenty-one exceedance to quote and costs well under a second.
@@ -105,6 +108,13 @@ pub struct Tangent {
     /// spectrum is itself a decaying curve, and an order statistic has to be
     /// compared with the same order statistic.
     pub null_spectrum: Vec<f64>,
+    /// Leading eigenvectors of the mean projector, `D x min(TOP_VECS, D)`.
+    ///
+    /// These *are* the shared directions. Kept so that something can be asked
+    /// of them -- most usefully whether they are technical, since library size,
+    /// ambient RNA and cell cycle all vary inside every region and are
+    /// therefore exactly what a shared-direction detector will find first.
+    pub top: Mat<f64>,
     /// `lambda_1` of the mean projector under the null, as `(mean, max)` over
     /// [`NULL_DRAWS`] draws.
     ///
@@ -190,6 +200,7 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
         d: 0,
         dim,
         spectrum: Vec::new(),
+        top: Mat::zeros(0, 0),
         null_spectrum: Vec::new(),
         null_lambda1: (0.0, 0.0),
     };
@@ -271,6 +282,10 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
     let evd = SelfAdjointEigendecomposition::new(mp.as_ref(), Side::Lower);
     let mut spectrum: Vec<f64> = (0..dim).map(|i| evd.s().column_vector().read(i)).collect();
     spectrum.reverse();
+    let nvec = TOP_VECS.min(dim);
+    let ev = evd.u();
+    // faer returns ascending, so the leading directions are the last columns.
+    let top = Mat::from_fn(dim, nvec, |i, t| ev.read(i, dim - 1 - t));
 
     let null_spectrum = null_spectrum(bases.len(), d, dim);
     let null_lambda1 = (
@@ -279,7 +294,7 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
         null_spectrum.first().copied().unwrap_or(0.0),
         null_spectrum.first().copied().unwrap_or(0.0),
     );
-    Tangent { curve, null, d, dim, spectrum, null_spectrum, null_lambda1 }
+    Tangent { curve, null, d, dim, spectrum, top, null_spectrum, null_lambda1 }
 }
 
 /// The mean projector's spectrum when the tangent spaces carry no shared

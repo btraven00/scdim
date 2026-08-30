@@ -60,7 +60,13 @@ Two traps that have cost time twice each:
       guess that zheng and Norman had none. Remaining weakness: the null assumes
       independent frames under H0, while tangent spaces on a connected manifold
       vary smoothly. A stronger null would preserve that smoothness.
-- [ ] **Is the shared direction technical?** The leading shared direction is
+- [x] ~~**Is the shared direction technical?**~~ Yes -- the top shared direction
+      is library size on all four datasets (|r| = 0.80-0.89), and on seurat PBMC
+      it isolates depth better than any leading PC does (0.84 vs 0.58/0.40/0.50).
+      Directions 2+ are the biological candidates and are much weaker. Still
+      open: whether any of them is cell cycle, which is shared *and* is biology.
+      GSE132188 has `proliferation`, `G2M_score`, `S_score` in `obs`.
+- [ ] ~~superseded~~ **Is the shared direction technical?** The leading shared direction is
       most likely library size, ambient RNA or cell cycle, since those vary
       inside every region. Testing it is the same computation as the depth
       confound row below: project cells onto the top eigenvector and correlate
@@ -91,11 +97,10 @@ Two traps that have cost time twice each:
 
 Ordered by value per line. All reuse state already computed.
 
-- [ ] **Depth confound.** `corr(score_k, log total_counts)` for the leading PCs.
-      `totals` is computed in `io.rs` and thrown away; `scores` already exist.
-      ~5 lines. PC1 being library size is the most common real failure in
-      scRNA-seq PCA, and biwhitening's row scaling partly removes depth, so a
-      *surviving* correlation is strong evidence rather than weak.
+- [x] ~~**Depth confound.**~~ Done as a side effect of the tangent work --
+      `totals` is kept now and the leading PCs' correlation with log depth is
+      printed alongside the shared directions. It is only shown under
+      `--tangent`; promoting it to a standing row is a few lines.
 - [ ] **TwoNN goodness-of-fit.** KS distance between the sorted μᵢ and the
       fitted Pareto(1, d̂), `1 − μ^−d`. Gives TwoNN what `bulk-KS` gives
       Tracy-Widom: a number saying whether the model held. Fails exactly when

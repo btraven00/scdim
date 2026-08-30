@@ -200,6 +200,30 @@ fn jstr(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Pearson correlation. Returns 0 for a degenerate input rather than NaN.
+fn pearson(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len().min(b.len());
+    if n < 3 {
+        return 0.0;
+    }
+    let (ma, mb) = (
+        a[..n].iter().sum::<f64>() / n as f64,
+        b[..n].iter().sum::<f64>() / n as f64,
+    );
+    let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
+    for i in 0..n {
+        let (x, y) = (a[i] - ma, b[i] - mb);
+        sab += x * y;
+        saa += x * x;
+        sbb += y * y;
+    }
+    if saa <= 0.0 || sbb <= 0.0 {
+        0.0
+    } else {
+        sab / (saa * sbb).sqrt()
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let mut pr = Progress::new(!args.quiet);
@@ -416,6 +440,52 @@ fn main() -> Result<()> {
                         tangent::NULL_DRAWS,
                         1.0 / (tangent::NULL_DRAWS + 1) as f64
                     );
+
+                    // Are these directions technical? Library size, ambient RNA
+                    // and cell cycle all vary *inside* every region, so they are
+                    // exactly what a shared-direction detector finds first. The
+                    // sign of an eigenvector is arbitrary, hence |r|.
+                    let depth: Vec<f64> = cloud
+                        .rows
+                        .iter()
+                        .map(|&r| counts.totals[r].max(1.0).ln())
+                        .collect();
+                    let nvec = t.top.ncols().min(k.max(1));
+                    let rs: Vec<String> = (0..nvec)
+                        .map(|c| {
+                            let proj: Vec<f64> = (0..cloud.len())
+                                .map(|i| {
+                                    (0..t.dim)
+                                        .map(|j| cloud.coords.read(i, j) * t.top.read(j, c))
+                                        .sum()
+                                })
+                                .collect();
+                            format!("{:.2}", pearson(&proj, &depth).abs())
+                        })
+                        .collect();
+                    // The leading PCs are the control: if PC1 is already depth,
+                    // a shared direction agreeing with it says nothing new.
+                    let pcs: Vec<String> = (0..embed_k.min(3))
+                        .map(|c| {
+                            let v: Vec<f64> =
+                                (0..cloud.len()).map(|i| cloud.coords.read(i, c)).collect();
+                            format!("{:.2}", pearson(&v, &depth).abs())
+                        })
+                        .collect();
+                    println!(
+                        "  |r| with log total counts -- shared dirs: {}   (leading PCs: {})",
+                        rs.join(" "),
+                        pcs.join(" ")
+                    );
+                    let r1: f64 = rs.first().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                    if r1 > 0.5 {
+                        println!(
+                            "  WARNING: the leading shared direction is library size \
+                             (|r| = {r1:.2}), not biology. It is what varies inside every \
+                             region. Read directions 2+ for programs, and note that cell \
+                             cycle is also shared and IS biology."
+                        );
+                    }
                 }
             }
             println!("\nLocal PCA (Little-Maggioni-Rosasco):");

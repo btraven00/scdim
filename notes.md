@@ -397,7 +397,45 @@ The pancreas is the most concentrated of the four (0.45 of the way from
 "all regions share the same d directions" to "the regions cover the embedding
 evenly"), which is the same ordering its curvature tail gives.
 
-Two things this does not yet support.Two things this does not yet support. The null assumes tangent spaces are
+Two things this does not yet support.### The leading shared direction is library size
+
+Whether these directions are biological or technical decides what the whole row
+is for, and it is one correlation away: project each cell onto a shared
+direction and correlate with log total counts. `io.rs` computes the totals for
+CPM normalisation and used to discard them.
+
+| dataset | shared dirs, \|r\| with log total counts | leading PCs |
+|---|---|---|
+| pancreas | **0.83** 0.46 0.34 0.36 0.10 0.26 0.27 0.51 | 0.82 0.10 0.16 |
+| seurat PBMC | **0.84** 0.14 0.24 0.33 0.22 0.41 0.46 0.24 | 0.58 0.40 0.50 |
+| zheng2017 | **0.89** 0.31 0.14 0.04 0.02 0.02 0.01 0.00 | 0.87 0.13 0.22 |
+| Norman | **0.80** 0.00 0.19 0.11 0.20 0.08 0.35 0.26 | 0.80 0.08 0.01 |
+
+**Unanimous: the top shared direction is sequencing depth**, at |r| = 0.80–0.89
+on all four. That is the expected answer rather than a disappointing one — depth
+varies *inside* every cell population, which is precisely the definition this
+row detects, so a technical axis is what it should find first.
+
+Two consequences.
+
+**As a technical-axis detector it works, and better than PC1.** On seurat PBMC
+depth is smeared across the leading PCs (0.58, 0.40, 0.50) while the top shared
+direction reaches 0.84 — the geometry concentrates into one direction what PCA
+splits across three. So this is not PC1 under another name, and projecting it
+out is a batch-style correction requiring no batch labels, no control genes and
+no assumption about which covariate to remove.
+
+**As a program detector, direction 1 has to go.** Directions 2 and beyond are
+the biological candidates and they are much weaker: 0.00–0.51 against depth,
+with no consistent structure across datasets. Whatever they are, they are not
+the same thing in every dataset.
+
+Still untested, and it is the one that matters before anyone subtracts anything:
+**cell cycle is shared and is biology.** GSE132188 carries `proliferation`,
+`G2M_score` and `S_score` in `obs`, which makes it the place to check whether
+any of directions 2+ is the cycle axis. `scdim` does not read `obs`.
+
+Two things this does not yet support. The null assumes tangent spaces are
 **independent** under H₀, which they are not on a connected manifold — adjacent
 neighbourhoods share cells, and the overlap curve shows how much. Centres are
 strided across the cloud rather than taken locally, which keeps that from

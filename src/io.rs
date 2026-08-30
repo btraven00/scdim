@@ -18,6 +18,12 @@ pub struct Counts {
     pub genes: Vec<usize>,
     /// Shape of the source matrix, before filtering.
     pub source_shape: (usize, usize),
+    /// Total counts per kept cell, aligned with the rows of `x`.
+    ///
+    /// Library size is the most common confound in a single-cell PCA -- PC1 is
+    /// frequently just sequencing depth -- and it is free here, since CPM
+    /// normalisation has to compute it anyway.
+    pub totals: Vec<f64>,
     /// Nonzeros in `x`. Decides whether a sparse Sinkhorn-Knopp is worth it:
     /// top-variance gene selection keeps the *dense* genes, so the selected
     /// submatrix is far denser than the file it came from.
@@ -83,12 +89,14 @@ pub fn load(path: &str, n_genes: usize, max_cells: usize, log: bool) -> Result<C
         pos[j] = out;
     }
     let mut x = Mat::<f64>::zeros(nz_cells, ranked.len());
+    let mut kept_totals = Vec::with_capacity(nz_cells);
     let mut nnz = 0usize;
     let mut row = 0usize;
     for i in 0..n {
         if totals[i] <= 0.0 {
             continue;
         }
+        kept_totals.push(totals[i]);
         let scale = 1e4 / totals[i];
         for k in indptr[i]..indptr[i + 1] {
             let out = pos[indices[k] as usize];
@@ -103,6 +111,7 @@ pub fn load(path: &str, n_genes: usize, max_cells: usize, log: bool) -> Result<C
 
     Ok(Counts {
         x,
+        totals: kept_totals,
         genes: ranked,
         source_shape: (shape.0, p),
         nnz,
