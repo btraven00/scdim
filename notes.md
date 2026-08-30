@@ -19,7 +19,7 @@ is the user-facing part; this is the working record.
 - [Geometry in the signal subspace](#geometry-in-the-signal-subspace)
 - [Does a bigger cloud help?](#does-a-bigger-cloud-help)
 - [The trajectory case: GSE132188](#the-trajectory-case-gse132188)
-- [Follow-up: decomposing a covariate into between- and within-region parts](#follow-up-decomposing-a-covariate-into-between--and-within-region-parts)
+- [Decomposing a covariate into between- and within-region parts](#decomposing-a-covariate-into-between--and-within-region-parts)
 - [Measurements on labelled data](#measurements-on-labelled-data)
 - [Deferred: scwarp acceleration](#deferred-scwarp-acceleration)
 - [Candidates not implemented](#candidates-not-implemented)

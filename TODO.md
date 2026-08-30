@@ -126,7 +126,7 @@ Two traps that have cost time twice each:
       technical" is falsified -- cell-cycle directions sit in the shared
       subspace (v2 |r| 0.61 with G2M, v4 0.76 with S on GSE132188, 67% cycling).
       Full write-up in
-      [notes.md](notes.md#follow-up-decomposing-a-covariate-into-between--and-within-region-parts).
+      [notes.md](notes.md#decomposing-a-covariate-into-between--and-within-region-parts).
       The observation: a tangent space only sees variation *inside* a
       neighbourhood, so it separates "this PC correlates with depth because the
       cell types it splits carry different amounts of RNA" from "this PC carries
