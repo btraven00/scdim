@@ -430,6 +430,61 @@ the biological candidates and they are much weaker: 0.00–0.51 against depth,
 with no consistent structure across datasets. Whatever they are, they are not
 the same thing in every dataset.
 
+### Which PCs are contaminated, and the between/within distinction
+
+`v_c` are unit vectors in PCA-score space, so their components already say where
+the shared directions live. Two rows, answering different questions:
+
+- **`depth axis`** = `|v₁[j]|²`, the fraction of the leading shared direction
+  lying in PC j. Sums to 1 across PCs.
+- **`shared(k)`** = `diag(Σ_c v_c v_cᵀ)[j]`, the fraction of PC j lying inside
+  the whole shared subspace. In [0, 1] per PC.
+
+alongside the plain `|r|` of each PC score with log total counts.
+
+```
+seurat PBMC
+    PC              1    2    3    4    5    6    7    8
+    |r| depth    0.58 0.40 0.50 0.11 0.03 0.21 0.06 0.20
+    depth axis   0.03 0.08 0.66 0.06 0.00 0.00 0.00 0.11
+    shared(31)   0.31 0.70 0.75 0.62 0.20 0.41 0.30 0.22
+```
+
+**The two depth rows dissociate, and the dissociation is the point.** PC1
+correlates 0.58 with depth yet holds 3% of the local depth axis, which sits in
+PC3 at 0.66. Those measure different things: `|r|` is a *global* correlation, so
+it fires when the groups a PC separates happen to differ in RNA content;
+`depth axis` only sees variation *inside* neighbourhoods, because that is all a
+tangent space contains.
+
+So seurat's PC1–depth correlation is largely a **between-cell-type** effect —
+monocytes carry more RNA than T cells — while the **within-type** technical
+gradient lives in PC3. Regressing out `nCount_RNA` removes both, and the
+between-type part is arguably real biology. Nobody making that call from a
+global correlation can see the difference; these two rows separate them.
+
+The other three datasets show the clean case, which is why the dissociation is
+easy to miss:
+
+| dataset | depth axis, top PCs | PC1 \|r\| depth | reading |
+|---|---|---|---|
+| Norman | PC1 **0.95** | 0.80 | one cell line, so no between-type differences at all — depth *is* PC1 |
+| pancreas | PC1 0.75, PC3 0.13 | 0.82 | mostly PC1 |
+| zheng2017 | PC1 0.49, PC6 0.24, PC3 0.12 | 0.87 | spread across three |
+| seurat PBMC | **PC3 0.66**, PC8 0.11, PC2 0.08 | 0.58 | not PC1 at all |
+
+### `shared(k)` is an identity/activity split, per PC
+
+A PC with low `shared` separates regions without describing variation inside
+them — an *identity* axis. A PC with high `shared` describes variation present
+in every region — an *activity* axis. That is Kotliar's cNMF distinction, read
+off the geometry with no clustering and no factorisation.
+
+On the pancreas, PC3 (0.22) and PC5 (0.17) are identity axes while PC7 (0.94),
+PC8 (0.95) and PC4 (0.92) are shared. On Norman, PC1 and PC2 are both 0.98 —
+a single cell line, so essentially every direction is an activity axis, which is
+the right answer for Perturb-seq and a good sanity check on the statistic.
+
 Still untested, and it is the one that matters before anyone subtracts anything:
 **cell cycle is shared and is biology.** GSE132188 carries `proliferation`,
 `G2M_score` and `S_score` in `obs`, which makes it the place to check whether

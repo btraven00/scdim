@@ -450,32 +450,56 @@ fn main() -> Result<()> {
                         .iter()
                         .map(|&r| counts.totals[r].max(1.0).ln())
                         .collect();
-                    let nvec = t.top.ncols().min(k.max(1));
+                    let nvec = t.vectors.ncols().min(k.max(1)).min(8);
                     let rs: Vec<String> = (0..nvec)
                         .map(|c| {
                             let proj: Vec<f64> = (0..cloud.len())
                                 .map(|i| {
                                     (0..t.dim)
-                                        .map(|j| cloud.coords.read(i, j) * t.top.read(j, c))
+                                        .map(|j| cloud.coords.read(i, j) * t.vectors.read(j, c))
                                         .sum()
                                 })
                                 .collect();
                             format!("{:.2}", pearson(&proj, &depth).abs())
                         })
                         .collect();
-                    // The leading PCs are the control: if PC1 is already depth,
-                    // a shared direction agreeing with it says nothing new.
-                    let pcs: Vec<String> = (0..embed_k.min(3))
-                        .map(|c| {
-                            let v: Vec<f64> =
-                                (0..cloud.len()).map(|i| cloud.coords.read(i, c)).collect();
-                            format!("{:.2}", pearson(&v, &depth).abs())
-                        })
-                        .collect();
+                    println!("  |r| of shared dirs with log total counts: {}", rs.join(" "));
+
+                    // Which PCs the technical axis actually lives in. A global
+                    // correlation says depth is present; this says where.
+                    let npc = embed_k.min(12);
+                    let cont = t.contamination(k);
+                    let cell = |v: f64| format!("{v:>5.2}");
+                    println!("\n  per-PC contamination (first {npc} PCs):");
                     println!(
-                        "  |r| with log total counts -- shared dirs: {}   (leading PCs: {})",
-                        rs.join(" "),
-                        pcs.join(" ")
+                        "    {:<12}{}",
+                        "PC",
+                        (1..=npc).map(|j| format!("{j:>5}")).collect::<Vec<_>>().join("")
+                    );
+                    println!(
+                        "    {:<12}{}",
+                        "|r| depth",
+                        (0..npc)
+                            .map(|c| {
+                                let v: Vec<f64> =
+                                    (0..cloud.len()).map(|i| cloud.coords.read(i, c)).collect();
+                                cell(pearson(&v, &depth).abs())
+                            })
+                            .collect::<Vec<_>>()
+                            .join("")
+                    );
+                    println!(
+                        "    {:<12}{}",
+                        "depth axis",
+                        (0..npc)
+                            .map(|j| cell(t.vectors.read(j, 0).powi(2)))
+                            .collect::<Vec<_>>()
+                            .join("")
+                    );
+                    println!(
+                        "    {:<12}{}",
+                        format!("shared({k})"),
+                        (0..npc).map(|j| cell(cont[j])).collect::<Vec<_>>().join("")
                     );
                     let r1: f64 = rs.first().and_then(|v| v.parse().ok()).unwrap_or(0.0);
                     if r1 > 0.5 {

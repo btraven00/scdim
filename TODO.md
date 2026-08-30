@@ -88,6 +88,18 @@ Two traps that have cost time twice each:
       tangent space per annotated group gives a pairwise overlap matrix, which
       answers "do the Alpha and Beta branches share directions" directly. Needs
       scdim to read `obs`, which it deliberately never has.
+- [ ] **A `--deflate` mode is deliberately not built.** Projecting the shared
+      directions out of the scores is one line, and the reasons not to ship it
+      are not computational: v1 is only ~69% depth by variance (|r| = 0.83), so
+      projection removes the other 31% too; the shared subspace contains cell
+      cycle, which is biology; and where v1 tracks a covariate you already
+      measured, regressing on the covariate is strictly more targeted than
+      projecting out an estimated direction. The geometry's value is *finding*
+      an axis, and it earns its keep only where the shared direction correlates
+      with nothing you recorded -- an unmeasured ambient or chemistry effect,
+      which no regression can reach. A correction mode would also owe users a
+      validation loop and a decision about re-fitting the rank afterwards. That
+      is a project, not a flag.
 - [ ] **Name the shared directions.** The overlap is computed in PCA-score
       space, so the shared subspace maps back through the loadings to genes.
       That turns "these regions share 2 directions" into "they share *these two
