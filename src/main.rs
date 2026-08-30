@@ -542,7 +542,7 @@ fn main() -> Result<()> {
                 .collect();
             let head = spec.eigenvalues.iter().take(50);
             println!(
-                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"scale_analysis":[{}],"local_pca":[{}],"tangent_overlap":[{}],"tangent_spectrum":[{}],"tangent_null":[{}],"tangent_shared_dims":{},"tangent_depth_r":[{}],"tangent_pc_depth_r":[{}],"tangent_depth_axis":[{}],"tangent_contamination":[{}]}}"#,
+                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"scale_analysis":[{}],"local_pca":[{}],"cloud_rows":[{}],"cloud_totals":[{}],"cloud_scores":[{}],"shared_scores":[{}],"tangent_overlap":[{}],"tangent_spectrum":[{}],"tangent_null":[{}],"tangent_shared_dims":{},"tangent_depth_r":[{}],"tangent_pc_depth_r":[{}],"tangent_depth_axis":[{}],"tangent_contamination":[{}]}}"#,
                 jstr(&args.path),
                 spec.n,
                 spec.p,
@@ -582,6 +582,57 @@ fn main() -> Result<()> {
                     ))
                     .collect::<Vec<_>>()
                     .join(","),
+                cloud
+                    .rows
+                    .iter()
+                    .map(|&i| counts.source_rows[i].to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                // The one covariate scdim computes for itself, emitted so a join
+                // does not have to re-read the matrix to get it back.
+                cloud
+                    .rows
+                    .iter()
+                    .map(|&i| num(counts.totals[i], 1))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                // Leading PC scores per cloud cell, so an external join against
+                // obs can ask which components a covariate lives in. Only under
+                // --tangent: it is the analysis that wants them, and it is a
+                // megabyte.
+                if args.tangent {
+                    let npc = embed_k.min(12);
+                    (0..cloud.len())
+                        .map(|i| {
+                            let row: Vec<String> =
+                                (0..npc).map(|c| num(cloud.coords.read(i, c), 6)).collect();
+                            format!("[{}]", row.join(","))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",")
+                } else {
+                    String::new()
+                },
+                // Per-cell projection onto the leading shared directions -- the
+                // quantity an external join actually wants, since testing what
+                // a shared direction *is* means correlating it with something.
+                tangent.as_ref().map_or(String::new(), |t| {
+                    let nd = t.vectors.ncols().min(4);
+                    (0..cloud.len())
+                        .map(|i| {
+                            let row: Vec<String> = (0..nd)
+                                .map(|c| {
+                                    let v: f64 = (0..t.dim)
+                                        .map(|j| cloud.coords.read(i, j) * t.vectors.read(j, c))
+                                        .sum();
+                                    num(v, 6)
+                                })
+                                .collect();
+                            format!("[{}]", row.join(","))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",")
+                }),
                 tangent.as_ref().map_or(String::new(), |t| t
                     .curve
                     .iter()

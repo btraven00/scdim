@@ -116,8 +116,16 @@ Two traps that have cost time twice each:
 
 ## The promising one
 
-- [ ] **Decompose a covariate into between- and within-region parts.** Design,
-      evidence and falsification plan written up in
+- [x] ~~**Decompose a covariate into between- and within-region parts.**~~
+      Tested 2026-08-30. Confirmed on seurat PBMC against 8 ground-truth cell
+      types: PC1 and PC3 have the same total depth correlation (0.55, 0.54) and
+      are opposite things (0.81/0.10 vs 0.02/0.67 between/within), and the
+      geometry puts 0.67 of its depth axis in PC3 and 0.04 in PC1 without ever
+      seeing a label. Scope limit found: it needs discrete populations, and
+      comes back mixed on a differentiation continuum. And "shared implies
+      technical" is falsified -- cell-cycle directions sit in the shared
+      subspace (v2 |r| 0.61 with G2M, v4 0.76 with S on GSE132188, 67% cycling).
+      Full write-up in
       [notes.md](notes.md#follow-up-decomposing-a-covariate-into-between--and-within-region-parts).
       The observation: a tangent space only sees variation *inside* a
       neighbourhood, so it separates "this PC correlates with depth because the
@@ -125,9 +133,15 @@ Two traps that have cost time twice each:
       a within-type technical gradient". Those need opposite treatment and a
       global correlation cannot tell them apart. Blocked on `scdim` reading
       `obs`, which is a deliberate scope decision. Validation data is already on
-      disk: GSE132188's six lineage labels give ground truth for the
-      between-part, and its cell-cycle scores are the sharp test, since cycle is
-      shared *and* is biology.
+      disk.
+- [ ] **Replicate result 1 on a second discrete dataset.** It rests on one:
+      seurat PBMC, 8 cell types. zheng2017 has `cell_type` and `batch` columns
+      and is already downloaded.
+- [ ] **Chase the donor lead.** On seurat, shared direction v4 has correlation
+      ratio 0.57 with donor against 0.19 for PC1 -- a batch axis surfacing
+      without batch labels. But its correlation ratio with cell type is 0.56,
+      so it is not cleanly separated. Worth one dataset with a strong,
+      documented batch effect.
 
 ## Diagnostics not built
 

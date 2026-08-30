@@ -1014,10 +1014,12 @@ against a ceiling of 7.7 — still meaningless. A branching trajectory is not a
 low-dimensional object at the scales reachable; the branches live inside
 something ~20-dimensional.
 
-## Follow-up: decomposing a covariate into between- and within-region parts
+## Decomposing a covariate into between- and within-region parts
 
-**Not built. This is the most promising thing the tangent work turned up and the
-design is recorded here so it does not have to be rediscovered.**
+**Tested against ground truth on 2026-08-30. Confirmed on discrete populations,
+scope-limited on continua, and its naive corollary falsified.** `scdim` still
+does not read `obs`; it emits `cloud_rows`, `cloud_totals`, `cloud_scores` and
+`shared_scores` in `--format json` and the join happens outside.
 
 ### The observation it rests on
 
@@ -1059,21 +1061,78 @@ alone. That is a decision nobody can currently make from a global correlation.
   then `--geom-cells`), so `Cloud::rows` indexes back through `embed` to
   `counts.x`. `totals` already makes that trip.
 
-### How to falsify it
+### Result 1: confirmed on discrete populations
 
-GSE132188 has everything needed and is already on disk.
+Seurat PBMC, 7704 cells, 8 `celltype.l1` levels as ground truth. Depth variance
+splits 32% between cell types, 68% within.
 
-1. **Ground truth for the between-part.** Six lineage annotations. Compute the
-   per-lineage median depth. The between-component should track those medians;
-   the within-component should not. If it does not separate, the framing is
-   wrong.
-2. **The sharp test is cell cycle.** It is shared across regions *and* is real
-   biology, so it is the case where "shared ⇒ technical" must fail. The dataset
-   carries `proliferation`, `G2M_score` and `S_score`. If the method flags the
-   cycle axis as technical, that is a falsification, and better found early than
-   after someone subtracts it.
-3. **The negative control already passed**: Norman, one cell line, depth axis
-   95% PC1.
+| PC | \|r\| total depth | \|r\| between | \|r\| within | depth axis |
+|---|---|---|---|---|
+| **1** | 0.55 | **0.81** | 0.10 | **0.04** |
+| 2 | 0.43 | 0.36 | 0.28 | 0.04 |
+| **3** | 0.54 | 0.02 | **0.67** | **0.67** |
+| 4 | 0.16 | 0.00 | 0.20 | 0.13 |
+
+**PC1 and PC3 have the same total depth correlation — 0.55 and 0.54 — and are
+opposite things.** PC1 is 0.81 between / 0.10 within: cell types differ in RNA
+content, which is biology. PC3 is 0.02 between / 0.67 within: a technical
+gradient inside every population. A global correlation cannot separate them.
+
+The tangent geometry, which never saw a label, puts **0.67 of its depth axis in
+PC3 and 0.04 in PC1**. The shared directions agree: v1 is within-dominant
+(0.73 within vs 0.41 between), v2 likewise (0.32 vs 0.07), while v3 and v4 are
+between-dominant. That is the prediction confirmed against ground truth, and it
+is the case where standard practice — regress out `nCount_RNA`, or drop PC1 —
+does the wrong thing.
+
+### Result 2: it needs discrete populations
+
+The same test on GSE132188 comes back **mixed**: v1 is 0.61 between against 0.71
+within, not a separation. The reason is structural rather than a failure of the
+statistic. Lineage labels on a differentiation continuum are a discretisation of
+something continuous, so "between-lineage" variation there is partly just local
+variation along the trajectory — the two categories are not distinct to begin
+with. The decomposition is well defined only when the populations are.
+
+Norman remains the negative control it was: one cell line, no between-type
+structure to find, depth axis 95% PC1.
+
+### Result 3: "shared ⇒ technical" is false, and the pancreas proves it
+
+The sharp test was written down before running it: cell cycle is shared across
+regions *and* is real biology, so it is where the naive corollary must break.
+It breaks.
+
+| direction | \|r\| G2M | \|r\| S | \|r\| cycling |
+|---|---|---|---|
+| v1 | 0.43 | 0.49 | 0.51 |
+| **v2** | **0.61** | 0.54 | 0.55 |
+| v3 | 0.07 | 0.03 | 0.09 |
+| **v4** | 0.03 | **0.76** | 0.36 |
+
+v2 is a cell-cycle direction and v4 is strongly S-phase, in a dataset where 67%
+of cells are cycling. **Projecting out the shared subspace would delete
+proliferation from an embryonic pancreas.** Sharedness identifies directions
+that vary inside every region; it says nothing about whether they are technical.
+Telling them apart requires external covariates, which is exactly what the join
+interface is for and exactly why no `--deflate` mode exists.
+
+### Result 4: batch, unlabelled
+
+Seurat PBMC has 8 donors. Correlation ratio of each shared direction with donor:
+v4 reaches **0.57**, against 0.19 for PC1. So a batch axis does surface without
+batch labels — but v4's correlation ratio with cell type is 0.56, so it is not
+cleanly separated, and this is a lead rather than a result.
+
+### What the four results add up to
+
+The geometry reliably finds **directions that vary inside every region**. That
+is a well-posed and useful thing to find: on discrete populations it separates a
+within-type technical gradient from a between-type biological one that a global
+correlation confounds. What it cannot do is say which of those directions is
+technical — cell cycle sits in the same subspace as sequencing depth. The
+deliverable is therefore a *decomposition*, joined to whatever covariates the
+user has, not an automatic correction.
 
 ### What it is not
 

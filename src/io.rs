@@ -18,6 +18,14 @@ pub struct Counts {
     pub genes: Vec<usize>,
     /// Shape of the source matrix, before filtering.
     pub source_shape: (usize, usize),
+    /// Row index in the *source file* of each kept cell, aligned with the rows
+    /// of `x`.
+    ///
+    /// Cells are strided twice before the geometry sees them, so nothing
+    /// downstream can be joined to a user's own metadata without this. Emitting
+    /// it is what lets `scdim` stay metadata-agnostic and still be useful with
+    /// metadata: it says which cells it measured, and the join happens outside.
+    pub source_rows: Vec<usize>,
     /// Total counts per kept cell, aligned with the rows of `x`.
     ///
     /// Library size is the most common confound in a single-cell PCA -- PC1 is
@@ -42,7 +50,7 @@ pub struct Counts {
 /// returned values are raw counts unless `log` is set. Biwhitening is derived
 /// for count data, so raw is the default.
 pub fn load(path: &str, n_genes: usize, max_cells: usize, log: bool) -> Result<Counts> {
-    let (shape, indptr, indices, data) = read_csr(path, max_cells)?;
+    let (shape, indptr, indices, data, src) = read_csr(path, max_cells)?;
     let (n, p) = (indptr.len() - 1, shape.1);
 
     // Per-cell totals, for CPM normalisation.
@@ -90,6 +98,7 @@ pub fn load(path: &str, n_genes: usize, max_cells: usize, log: bool) -> Result<C
     }
     let mut x = Mat::<f64>::zeros(nz_cells, ranked.len());
     let mut kept_totals = Vec::with_capacity(nz_cells);
+    let mut kept_rows = Vec::with_capacity(nz_cells);
     let mut nnz = 0usize;
     let mut row = 0usize;
     for i in 0..n {
@@ -97,6 +106,7 @@ pub fn load(path: &str, n_genes: usize, max_cells: usize, log: bool) -> Result<C
             continue;
         }
         kept_totals.push(totals[i]);
+        kept_rows.push(src[i]);
         let scale = 1e4 / totals[i];
         for k in indptr[i]..indptr[i + 1] {
             let out = pos[indices[k] as usize];
@@ -111,6 +121,7 @@ pub fn load(path: &str, n_genes: usize, max_cells: usize, log: bool) -> Result<C
 
     Ok(Counts {
         x,
+        source_rows: kept_rows,
         totals: kept_totals,
         genes: ranked,
         source_shape: (shape.0, p),
@@ -126,7 +137,7 @@ pub fn load(path: &str, n_genes: usize, max_cells: usize, log: bool) -> Result<C
 /// `max_cells`, not by the file. The whole file is still read: skipping ahead
 /// would need random access, which the streaming reader does not offer and
 /// which would not be faster for a chunked HDF5 dataset anyway.
-type Csr = ((usize, usize), Vec<usize>, Vec<u32>, Vec<f64>);
+type Csr = ((usize, usize), Vec<usize>, Vec<u32>, Vec<f64>, Vec<usize>);
 fn read_csr(path: &str, max_cells: usize) -> Result<Csr> {
     futures::executor::block_on(async {
         let mut reader = open(path, &OpenOptions::new(4096)).await?;
@@ -135,6 +146,7 @@ fn read_csr(path: &str, max_cells: usize) -> Result<Csr> {
         let mut indptr = vec![0usize];
         let mut indices: Vec<u32> = Vec::new();
         let mut data: Vec<f64> = Vec::new();
+        let mut src: Vec<usize> = Vec::new();
 
         let mut stream = reader.x_stream();
         while let Some(chunk) = stream.next().await {
@@ -149,8 +161,9 @@ fn read_csr(path: &str, max_cells: usize) -> Result<Csr> {
                 indices.extend_from_slice(&csr.indices[lo..hi]);
                 data.extend_from_slice(&vals[lo..hi]);
                 indptr.push(indices.len());
+                src.push(chunk.row_offset + r);
             }
         }
-        Ok::<_, anyhow::Error>((shape, indptr, indices, data))
+        Ok::<_, anyhow::Error>((shape, indptr, indices, data, src))
     })
 }
