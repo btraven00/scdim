@@ -1,0 +1,99 @@
+# TODO
+
+Reasoning for everything here is in [notes.md](notes.md); this is the checklist.
+Anything that adds or changes a reported statistic has to clear **the ladder**
+first — see [Does a bigger cloud help?](notes.md#does-a-bigger-cloud-help).
+
+## The acceptance test
+
+Run at ~2000, ~4000 and ~8000 geometry cells with `--max-cells` held fixed so the
+embedding never changes, then tabulate two things:
+
+- **drift** of the statistic across the ladder, and
+- **separation** between datasets.
+
+Reject anything whose separation does not clearly exceed its drift. `clumpiness`
+passes at 25:1 (2× separation, 8% drift); the MST step ratio it replaced had ~3%
+separation at 8000 cells against 11–13% drift, i.e. it was reporting the sample
+size. Prefer statistics that rest on a whole distribution: every max-of-N order
+statistic tried here has failed, because an extremum grows with whatever it is
+maximised over.
+
+Two traps that have cost time twice each:
+
+- `cargo test --release` does **not** refresh `target/release/scdim`. Always
+  `cargo build --release` before measuring anything.
+- `Cloud::new` strides by an integer, so reachable cloud sizes are only n, n/2,
+  n/3 … `--geom-cells 6000` out of 8000 rows silently gives 4000.
+
+## Datasets
+
+- [ ] **GSE132188**, pancreatic endocrinogenesis (Bastidas-Ponce 2019). Every
+      dataset measured so far is blob-shaped — Perturb-seq on one cell line, and
+      two PBMC sets — and all three read as one continuous piece with no
+      bottlenecks. This is the missing case: a real branching trajectory with
+      branch points. It is the shape `ricci-neg` was built for and has never
+      been tested on here, the D 2–5 regime where `corr-dim` can actually work
+      below its ceiling, and the best chance of `local-pca` showing an interior
+      dip instead of a monotone fall.
+
+## Diagnostics not built
+
+Ordered by value per line. All reuse state already computed.
+
+- [ ] **Depth confound.** `corr(score_k, log total_counts)` for the leading PCs.
+      `totals` is computed in `io.rs` and thrown away; `scores` already exist.
+      ~5 lines. PC1 being library size is the most common real failure in
+      scRNA-seq PCA, and biwhitening's row scaling partly removes depth, so a
+      *surviving* correlation is strong evidence rather than weak.
+- [ ] **TwoNN goodness-of-fit.** KS distance between the sorted μᵢ and the
+      fitted Pareto(1, d̂), `1 − μ^−d`. Gives TwoNN what `bulk-KS` gives
+      Tracy-Widom: a number saying whether the model held. Fails exactly when
+      local dimension is heterogeneous or density varies, which the notes
+      currently warn about in prose without measuring. ~6 lines, μᵢ already
+      sorted.
+- [ ] **Eigenvector localisation (IPR).** `1 / Σ vᵢ⁴` per leading eigenvector,
+      free from the EVD already run. Separates a population-wide mode from an
+      eigenvalue that cleared λ₊ because of a dozen doublets — the check
+      Tracy-Widom structurally cannot make, since an outlier eigenvalue is an
+      outlier eigenvalue whether it is biology or three bad cells. Two lines.
+- [ ] **Effective rank.** `exp(−Σ p log p)` with `pᵢ = λᵢ/Σλ`, or stable rank
+      `Σλ/λ₁`. One line, continuous, no threshold. When the integer rows
+      disagree, a soft rank is worth having.
+- [ ] **Split-half PC reproducibility.** Biwhiten once, split the cells, two
+      EVDs, principal angles between the two k-dimensional subspaces; the k
+      where cos θ drops below ~0.5 is how many PCs are reproducible. The
+      empirical version of the BBP overlap floor, with no noise model at all.
+      Two extra EVDs, and the EVD is not the bottleneck — Sinkhorn is ~70%.
+- [ ] **Parallel analysis.** Shuffle each gene independently, recompute the
+      spectrum, keep components above the permuted λ₁. The only thing that
+      *measures* the HVG-selection bias rather than apologising for it, and the
+      right cross-check on whether biwhitening worked. Costs B full EVDs.
+
+## Known limits, not yet acted on
+
+- [ ] **`corr-dim` cannot work on atlas-shaped data and should probably say so
+      louder.** The Eckmann-Ruelle ceiling grows as 2·log₁₀N: four times the
+      cells bought 1.2 of ceiling, and measuring D ≈ 20 legitimately would need
+      ~10¹⁰ cells. It is a trajectory-regime estimator (D 2–5, which its unit
+      tests cover) being run on data that is nowhere near that. Consider
+      declining to print a number above the ceiling rather than printing one and
+      shouting.
+- [ ] **Every dimension row is an upper bound at these cell counts.** Even at
+      k = 1024, an eighth of an 8000-cell cloud, the local-PCA walk has not
+      stopped falling. Two estimators with unrelated failure modes agree on
+      this. It is stated in the README; there is no fix, only the honesty.
+- [ ] **`SCORE_K = 100` silently truncates the geometry** when the
+      Tracy-Widom rank exceeds 100, which happens on both whole-organism
+      atlases (TW 172 and 184).
+- [ ] **A node whose affinities all underflow to zero** gets an identity row in
+      the Laplacian and eigenvalue 1, so it is not counted as its own component.
+      Rare under union symmetrisation, possible for a far outlier.
+
+## Deferred
+
+- [ ] **scwarp sparse Sinkhorn**, once `feat/biwhitening` reaches `main`. Three
+      things measured before switching, and two methodological disagreements to
+      settle — see [notes.md](notes.md#deferred-scwarp-acceleration). Sinkhorn is
+      ~70% of the run, but neither the GPU nor sparsity is the lever here; the
+      iteration count is.

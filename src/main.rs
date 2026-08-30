@@ -47,7 +47,8 @@ struct Args {
     /// Near-duplicate cells produce huge ratios; this is what removes them.
     #[arg(long, default_value_t = 0.01)]
     twonn_trim: f64,
-    /// Neighbours per cell in the Laplacian k-NN graph.
+    /// Neighbours per cell in the shared k-NN graph -- the Laplacian and the
+    /// Ollivier-Ricci curvature both read it. Local PCA builds its own, larger.
     #[arg(long, default_value_t = 15)]
     knn: usize,
     /// Random subsamples per decimation level in the TwoNN scale analysis.
