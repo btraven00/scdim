@@ -63,6 +63,11 @@ const MAX_CENTRES: usize = 256;
 /// Hop bins; the last one is a `>=` bucket.
 const MAX_HOPS: usize = 10;
 
+/// Draws of the whole ensemble used to build the `lambda_1` null. The
+/// statistic is an extremum, so what matters is the max over draws; 20 gives
+/// a one-in-twenty-one exceedance to quote and costs well under a second.
+pub const NULL_DRAWS: usize = 20;
+
 /// Above this fraction of `d`, the random-subspace null leaves too little room
 /// for the measurement to say much.
 pub const NULL_WARN: f64 = 0.3;
@@ -91,10 +96,41 @@ pub struct Tangent {
     /// tangent spaces: the leading eigenvectors span the subspace every region
     /// shares, and the geometry needs no clustering to find it.
     ///
-    /// No null test is attached. A permutation null on the top eigenvalue would
-    /// be the honest way to call one significant, and is not done -- read the
-    /// profile against `d/D` and treat a small excess as nothing.
     pub spectrum: Vec<f64>,
+    /// Per-rank maximum of the null spectrum over [`NULL_DRAWS`] draws.
+    ///
+    /// Counting observed eigenvalues that beat their own rank's null is the
+    /// dimension of the shared subspace. Comparing every observed eigenvalue to
+    /// `lambda_1`'s null instead would be the wrong test twice over -- the null
+    /// spectrum is itself a decaying curve, and an order statistic has to be
+    /// compared with the same order statistic.
+    pub null_spectrum: Vec<f64>,
+    /// `lambda_1` of the mean projector under the null, as `(mean, max)` over
+    /// [`NULL_DRAWS`] draws.
+    ///
+    /// `d/D` is where the null puts the *mean* of the spectrum, not its top: a
+    /// finite number of random frames fluctuates, and the largest of D
+    /// eigenvalues sits well above d/D by construction. Comparing an observed
+    /// `lambda_1` to `d/D` therefore overstates it, sometimes badly -- at
+    /// d/D = 0.48 a null `lambda_1` near 0.9 is free.
+    ///
+    /// The null depends only on the number of frames, d and D, never on the
+    /// data, so it costs one small computation rather than a resampling of the
+    /// cloud. Deterministically seeded: a diagnostic you cannot rerun is not a
+    /// diagnostic.
+    pub null_lambda1: (f64, f64),
+}
+
+impl Tangent {
+    /// Dimension of the shared subspace: eigenvalues beating their own rank's
+    /// null on every draw.
+    pub fn shared_dims(&self) -> usize {
+        self.spectrum
+            .iter()
+            .zip(&self.null_spectrum)
+            .take_while(|(obs, null)| obs > null)
+            .count()
+    }
 }
 
 impl Tangent {
@@ -154,6 +190,8 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
         d: 0,
         dim,
         spectrum: Vec::new(),
+        null_spectrum: Vec::new(),
+        null_lambda1: (0.0, 0.0),
     };
     if m < 32 || d == 0 || nbr.len() != m {
         return empty();
@@ -234,7 +272,92 @@ pub fn tangent_overlap(c: &Cloud, nbr: &[Vec<(f64, usize)>], d: usize) -> Tangen
     let mut spectrum: Vec<f64> = (0..dim).map(|i| evd.s().column_vector().read(i)).collect();
     spectrum.reverse();
 
-    Tangent { curve, null, d, dim, spectrum }
+    let null_spectrum = null_spectrum(bases.len(), d, dim);
+    let null_lambda1 = (
+        // Mean of the top eigenvalue is not recoverable from the per-rank max,
+        // so report the max twice rather than invent one.
+        null_spectrum.first().copied().unwrap_or(0.0),
+        null_spectrum.first().copied().unwrap_or(0.0),
+    );
+    Tangent { curve, null, d, dim, spectrum, null_spectrum, null_lambda1 }
+}
+
+/// The mean projector's spectrum when the tangent spaces carry no shared
+/// structure at all: per rank, the largest value seen over [`NULL_DRAWS`]
+/// ensembles of uniformly random orthonormal d-frames.
+///
+/// This is the whole test. An observed eigenvalue means something only if it
+/// clears what N random frames produce for free, and at a large d/D that is
+/// most of the way to 1 -- at d/D = 0.48 the null's own top eigenvalue is 0.54.
+pub fn null_spectrum(frames: usize, d: usize, dim: usize) -> Vec<f64> {
+    if frames == 0 || d == 0 || d >= dim {
+        return Vec::new();
+    }
+    let draws: Vec<Vec<f64>> = (0..NULL_DRAWS)
+        .into_par_iter()
+        .map(|draw| {
+            let mut state = 0x5EED_u64 ^ (draw as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut unit = move || {
+                state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+            };
+            let mut m = Mat::<f64>::zeros(dim, dim);
+            let w = 1.0 / frames as f64;
+            for _ in 0..frames {
+                let u = random_frame(dim, d, &mut unit);
+                for a in 0..dim {
+                    for b in 0..=a {
+                        let v: f64 = (0..d).map(|t| u.read(a, t) * u.read(b, t)).sum();
+                        m.write(a, b, m.read(a, b) + v * w);
+                        if a != b {
+                            m.write(b, a, m.read(a, b));
+                        }
+                    }
+                }
+            }
+            let evd = SelfAdjointEigendecomposition::new(m.as_ref(), Side::Lower);
+            let mut e: Vec<f64> = (0..dim).map(|i| evd.s().column_vector().read(i)).collect();
+            e.reverse();
+            e
+        })
+        .collect();
+    // Per rank, the largest the null ever produced: an exceedance test at
+    // 1/(NULL_DRAWS+1) for every eigenvalue, not just the first.
+    (0..dim)
+        .map(|j| draws.iter().map(|e| e[j]).fold(f64::MIN, f64::max))
+        .collect()
+}
+
+/// A uniformly random orthonormal d-frame in R^dim: Gaussian columns, then
+/// modified Gram-Schmidt. At these sizes (d <= 30, dim <= 100) that is cheaper
+/// than reaching for a QR, and stable enough -- the columns start orthogonal in
+/// expectation, so nothing is being subtracted away.
+fn random_frame(dim: usize, d: usize, unit: &mut impl FnMut() -> f64) -> Mat<f64> {
+    let mut gauss = || {
+        // Box-Muller; the u1 floor keeps ln() finite.
+        let (u1, u2) = (unit().max(1e-12), unit());
+        (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    };
+    let mut u = Mat::<f64>::zeros(dim, d);
+    for t in 0..d {
+        for i in 0..dim {
+            u.write(i, t, gauss());
+        }
+        for s in 0..t {
+            let dot: f64 = (0..dim).map(|i| u.read(i, s) * u.read(i, t)).sum();
+            for i in 0..dim {
+                u.write(i, t, u.read(i, t) - dot * u.read(i, s));
+            }
+        }
+        let nrm = (0..dim).map(|i| u.read(i, t).powi(2)).sum::<f64>().sqrt();
+        for i in 0..dim {
+            u.write(i, t, u.read(i, t) / nrm.max(1e-300));
+        }
+    }
+    u
 }
 
 /// Orthonormal basis for the `d` leading directions of the neighbourhood, in
@@ -345,6 +468,39 @@ mod tests {
         assert!((frobenius_overlap(&a, &rot) - 3.0).abs() < 1e-10);
     }
 
+    /// The null has to behave like a null: a frame basis is orthonormal, and
+    /// `lambda_1` sits above `d/D` (a finite ensemble fluctuates) but below 1,
+    /// falling towards `d/D` as the ensemble grows. If it did not, comparing an
+    /// observed `lambda_1` to `d/D` would be defensible -- it is not.
+    #[test]
+    fn null_lambda1_is_above_the_flat_level_and_shrinks() {
+        let mut r = lcg(99);
+        let f = random_frame(12, 4, &mut r);
+        for a in 0..4 {
+            for b in 0..4 {
+                let dot: f64 = (0..12).map(|i| f.read(i, a) * f.read(i, b)).sum();
+                let want = (a == b) as u8 as f64;
+                assert!((dot - want).abs() < 1e-10, "frame not orthonormal at ({a},{b})");
+            }
+        }
+
+        let flat = 4.0 / 12.0;
+        let small = null_spectrum(32, 4, 12);
+        let big = null_spectrum(512, 4, 12);
+        assert!(small[0] > flat && small[0] < 1.0, "lambda_1 null {:.3}", small[0]);
+        assert!(
+            small.windows(2).all(|w| w[1] <= w[0] + 1e-9),
+            "null spectrum not descending"
+        );
+        assert!(
+            big[0] < small[0],
+            "null did not shrink with ensemble size: {:.3} -> {:.3}",
+            small[0],
+            big[0]
+        );
+        assert!(big[0] > flat, "null fell below the flat level: {:.3}", big[0]);
+    }
+
     /// The claim the row exists to make. A flat patch has one tangent space
     /// everywhere, so overlap must stay near d at every distance. A curved
     /// object -- here a 2-sphere, whose tangent plane rotates all the way to
@@ -362,7 +518,8 @@ mod tests {
         });
         let c = Cloud::new(&flat, n);
         let nbr = c.knn(80);
-        let (curve, null) = tangent_overlap(&c, &nbr, 3);
+        let t = tangent_overlap(&c, &nbr, 3);
+        let (curve, null) = (&t.curve, t.null);
         assert!(curve.len() >= 3, "only {} bins", curve.len());
         let far = curve.last().unwrap();
         assert!(
@@ -388,7 +545,7 @@ mod tests {
         });
         let c = Cloud::new(&circle, 2000);
         let nbr = c.knn(64);
-        let (curve, _) = tangent_overlap(&c, &nbr, 1);
+        let curve = &tangent_overlap(&c, &nbr, 1).curve;
         let (near, far) = (&curve[0], curve.last().unwrap());
         assert!(
             near.shared > 0.9,

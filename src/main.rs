@@ -398,12 +398,23 @@ fn main() -> Result<()> {
                     let top: Vec<String> =
                         t.spectrum.iter().take(10).map(|l| format!("{l:>6.3}")).collect();
                     println!("  lambda  {}", top.join(" "));
-                    // Not "how many exceed chance": tr(M) = d makes the mean
-                    // of the spectrum exactly d/D, so about half always do.
+                    // Against the null, not against d/D. d/D is where the null
+                    // puts the *mean* of the spectrum; its top sits well above
+                    // that for any finite ensemble, so d/D flatters lambda_1.
+                    let nx: Vec<String> = t
+                        .null_spectrum
+                        .iter()
+                        .take(10)
+                        .map(|l| format!("{l:>6.3}"))
+                        .collect();
+                    println!("  null    {}", nx.join(" "));
+                    let k = t.shared_dims();
                     println!(
-                        "  lambda_1 = {:.2}x chance; {} directions above 2x",
-                        t.spectrum[0] / t.chance(),
-                        t.spectrum.iter().filter(|&&l| l > 2.0 * t.chance()).count()
+                        "  shared subspace: {k} of {} directions beat their own rank's null \
+                         over {} draws (p < {:.2} each)",
+                        t.dim,
+                        tangent::NULL_DRAWS,
+                        1.0 / (tangent::NULL_DRAWS + 1) as f64
                     );
                 }
             }

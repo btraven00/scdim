@@ -54,11 +54,12 @@ Two traps that have cost time twice each:
       2000/4000/8000 geometry cells; this one has not been, and the hop bins are
       the obvious thing to drift (a denser graph means more hops to cross the
       same distance).
-- [ ] **A permutation null on the top eigenvalue of the mean projector.**
-      Currently there is no test: "2× chance" is a rule of thumb. Randomising
-      the tangent bases and re-accumulating M gives the null distribution of λ₁
-      directly, and it is the difference between "there is a shared direction"
-      and "λ₁ is 0.9, as it would be for d/D = 0.48 anyway".
+- [x] ~~**A permutation null on the mean projector.**~~ Done. Every eigenvalue
+      is tested against its own rank's maximum over 20 random-frame ensembles.
+      All four datasets have 11-31 shared directions, which overturned the
+      guess that zheng and Norman had none. Remaining weakness: the null assumes
+      independent frames under H0, while tangent spaces on a connected manifold
+      vary smoothly. A stronger null would preserve that smoothness.
 - [ ] **Is the shared direction technical?** The leading shared direction is
       most likely library size, ambient RNA or cell cycle, since those vary
       inside every region. Testing it is the same computation as the depth

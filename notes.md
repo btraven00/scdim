@@ -363,30 +363,49 @@ The headline is instead the participation ratio `d²/Σλ²`, bounded by [d, D] 
 the lower bound every region shares the same d directions, at the upper bound
 they cover the embedding evenly and share nothing.
 
-| dataset | d | D | chance | λ₁ | λ₁/chance | above 2× | concentration | position in [d, D] |
+**The chance level is not the test.** `d/D` is where the null puts the *mean*
+of the spectrum, not its top: a finite ensemble of random frames fluctuates, and
+the largest of D eigenvalues sits well above `d/D` by construction — at
+`d/D = 0.48` the null's own λ₁ is 0.55. So the null is built explicitly, 20
+ensembles of uniformly random orthonormal d-frames, and every observed
+eigenvalue is compared against **its own rank's** maximum over those draws. An
+order statistic has to be tested against the same order statistic.
+
+The null depends only on (N, d, D) and never on the data, so it is one small
+computation rather than a resampling of the cloud, and it is deterministically
+seeded.
+
+| dataset | d | D | chance d/D | λ₁ | null λ₁ | shared dims | concentration | position in [d, D] |
 |---|---|---|---|---|---|---|---|---|
-| pancreas | 10 | 49 | 0.204 | 0.897 | **4.4×** | **7** | 27.7 of [10, 49] | 0.45 |
-| seurat PBMC | 21 | 76 | 0.276 | 0.874 | 3.2× | 4 | 57.0 of [21, 76] | 0.65 |
-| zheng2017 | 9 | 20 | 0.450 | 0.886 | 2.0× | 0 | 16.0 of [9, 20] | 0.64 |
-| Norman | 14 | 29 | 0.483 | 0.958 | 2.0× | 0 | 23.7 of [14, 29] | 0.65 |
+| pancreas | 10 | 49 | 0.204 | 0.897 | 0.261 | **12** of 49 | 27.7 | **0.45** |
+| seurat PBMC | 21 | 76 | 0.276 | 0.874 | 0.337 | **31** of 76 | 57.0 | 0.65 |
+| zheng2017 | 9 | 20 | 0.450 | 0.886 | 0.518 | **12** of 20 | 16.0 | 0.64 |
+| Norman | 14 | 29 | 0.483 | 0.958 | 0.546 | **11** of 29 | 23.7 | 0.65 |
 
-Every dataset has a leading direction present in 87–96% of regions. Whether that
-means anything depends on d/D: the pancreas and seurat have room to see it
-(4.4× and 3.2× chance, with 7 and 4 directions clearing twice chance), while
-zheng and Norman have chance levels near 0.5 and nothing clearing 2× — their
-λ₁ ≈ 0.9 is largely what a d/D of 0.48 buys you for free.
+**Every dataset has a substantial shared subspace.** The count is the leading
+*run* of eigenvalues beating their own rank's null, which handles multiplicity
+by construction — testing 49 eigenvalues at p < 0.05 each would expect ~2.5 to
+pass somewhere, but the probability that the first 12 all pass is negligible.
 
-So the shared subspace is **multi-dimensional where it is measurable at all**,
-which is the opposite of what the pairwise floors seemed to say. Those readings
-were wrong twice over: they used the far bins rather than the all-pairs mean that
-Σλ² actually equals, and they inferred a spectrum shape from one scalar.
+Two readings to keep apart. **Significance is not magnitude**: λ₁ = 0.897
+against a null of 0.261 is enormous, while λ₁₂ ≈ 0.30 against 0.23 is marginal,
+and both count as one direction here. Read the profile, not the count. And
+`d/D` flatters λ₁ badly at high d/D — Norman's λ₁ = 0.958 looks decisive against
+chance of 0.483 and is only 1.75× its actual null.
 
-Two things this does not yet support. There is **no null test** on the top
-eigenvalue — a permutation would be the honest way to call a direction real, and
-2× chance is a rule of thumb, not a test. And a subspace is not a basis: with 4–7
-shared directions, any rotation within that span is equally shared, so naming
-individual programs needs an extra criterion (non-negativity, varimax, ICA) on
-top of the geometry.
+The pancreas is the most concentrated of the four (0.45 of the way from
+"all regions share the same d directions" to "the regions cover the embedding
+evenly"), which is the same ordering its curvature tail gives.
+
+Two things this does not yet support.Two things this does not yet support. The null assumes tangent spaces are
+**independent** under H₀, which they are not on a connected manifold — adjacent
+neighbourhoods share cells, and the overlap curve shows how much. Centres are
+strided across the cloud rather than taken locally, which keeps that from
+dominating, but the null is a test against *unrelated* frames, not against
+*smoothly varying* ones. And a subspace is not a basis: with 11–31 shared
+directions, any rotation within that span is equally shared, so naming
+individual programs needs an extra criterion — non-negativity, varimax or ICA —
+on top of the geometry. That is the argument for NMF, and it is now a strong one.
 
 seurat PBMC's excursion to −1.15 is worth noting: the null assumes *independent*
 random subspaces, and tangent spaces on the same manifold at maximum separation
