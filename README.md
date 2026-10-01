@@ -15,7 +15,15 @@ defaults are in [notes.md](notes.md).
 ```bash
 cargo run --release -- data.h5ad
 cargo run --release -- data.h5ad --max-cells 5000 --format json
+cargo run --release -- --embedding sample_embedding.tsv   # a precomputed embedding
 ```
+
+`--embedding` reads a cells x components TSV (header, then `cell_id  PC1 ...`,
+the omnibenchmark `embedding_tsv` layout) and runs only the geometric rows on
+it, so embeddings from different methods can be compared on the same
+diagnostics. There is no count matrix, so `tracy-widom`, `mp-edge`, the
+spectral header fields and the library-size rows of `--tangent` are absent
+(`null` in JSON).
 
 ```
 Norman_2019.h5ad  3974x2000 of 111255x19018  q=0.5033  density=60.9%  embed=29D  sigma2=0.8709  bulk-KS=0.0103

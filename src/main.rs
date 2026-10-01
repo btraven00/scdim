@@ -9,8 +9,16 @@ use scdim::{
 #[derive(Parser)]
 #[command(about = "Estimate the number of signal components in a single-cell matrix")]
 struct Args {
-    /// Input matrix (h5ad, h5seurat, 10x h5, mtx, ...).
+    /// Input matrix (h5ad, h5seurat, 10x h5, mtx, ...), or with --embedding a
+    /// precomputed embedding TSV.
     path: String,
+    /// PATH is a precomputed embedding (TSV: header, then `cell_id  PC1  PC2 ...`
+    /// per cell, the omnibenchmark `embedding_tsv` layout). Biwhitening and the
+    /// rank tests are skipped -- they describe a count matrix, and there is none
+    /// -- and the geometric rows run on the given coordinates, so embeddings from
+    /// different methods can be compared on the same diagnostics.
+    #[arg(long)]
+    embedding: bool,
     /// Genes kept, by variance of log1p(CPM). Bounds the O(g^3) eigendecomposition.
     #[arg(long, default_value_t = 2000)]
     n_genes: usize,
@@ -225,10 +233,41 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
     }
 }
 
+/// What the count-matrix path computes and the embedding path does not have.
+struct Spectral {
+    counts: io::Counts,
+    spec: rank::Spectrum,
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let mut pr = Progress::new(!args.quiet);
 
+    let (embed, spectral, mut estimates) = if args.embedding {
+        pr.begin("reading embedding");
+        let e = io::load_embedding(&args.path)?;
+        pr.ok(
+            "reading embedding",
+            &format!("{} cells x {} components", e.x.nrows(), e.x.ncols()),
+        );
+        (e.x, None, Vec::new())
+    } else {
+        let (embed, s, tw) = spectral_embedding(&args, &mut pr)?;
+        (embed, Some(s), vec![tw])
+    };
+    let embed_k = embed.ncols();
+    if let Some(s) = &spectral {
+        estimates.push(rank::mp_edge(&s.spec));
+    }
+    geometry(&args, &mut pr, &embed, embed_k, spectral.as_ref(), estimates)
+}
+
+/// Counts -> biwhitened spectrum -> the Tracy-Widom signal subspace, whose
+/// scores are the cloud the geometry runs on.
+fn spectral_embedding(
+    args: &Args,
+    pr: &mut Progress,
+) -> Result<(faer::Mat<f64>, Spectral, rank::Estimate)> {
     pr.begin("reading matrix");
     let counts = io::load(&args.path, args.n_genes, args.max_cells, args.log)?;
     pr.ok(
@@ -257,7 +296,17 @@ fn main() -> Result<()> {
     let embed_k = tw.rank.clamp(2, spec.scores.ncols());
     let embed = spec.scores.as_ref().subcols(0, embed_k).to_owned();
     pr.ok("tracy-widom test", &format!("rank {}, embedding {embed_k}D", tw.rank));
+    Ok((embed, Spectral { counts, spec }, tw))
+}
 
+fn geometry(
+    args: &Args,
+    pr: &mut Progress,
+    embed: &faer::Mat<f64>,
+    embed_k: usize,
+    spectral: Option<&Spectral>,
+    mut estimates: Vec<rank::Estimate>,
+) -> Result<()> {
     pr.begin("point cloud + k-NN graph");
     // Cloud::new strides by an integer, so the reachable sizes are n, n/2,
     // n/3 ... -- asking for 6000 out of 8000 rows gives 4000. Compute the size
@@ -265,7 +314,7 @@ fn main() -> Result<()> {
     let stride = embed.nrows().div_ceil(args.geom_cells.max(1)).max(1);
     let m = embed.nrows().div_ceil(stride);
     check_geometry_memory(m)?;
-    let cloud = geom::Cloud::new(&embed, args.geom_cells);
+    let cloud = geom::Cloud::new(embed, args.geom_cells);
     let knn = cloud.knn(args.knn);
     pr.ok(
         "point cloud + k-NN graph",
@@ -321,26 +370,25 @@ fn main() -> Result<()> {
     });
     pr.finish();
 
-    let estimates = [
-        tw,
-        rank::mp_edge(&spec),
+    estimates.extend([
         nn.0.expect("spawned"),
         twonn::plateau(&scale, PLATEAU_TOL),
         localpca::summary(&lpca, embed_k),
         betti::patch_count(&mst, MAX_PATCHES, MIN_MST_GAP),
         fiedler::fiedler(&lap, MAX_PATCHES),
         ricci::curvature_summary(&kappa, args.ricci_cut),
-    ];
+    ]);
 
     // Computed before the format match: the text table and the JSON have to be
     // the same numbers, and these need the cloud and the counts, which the JSON
     // branch would otherwise not reach for.
-    let tstats = tangent.as_ref().map(|t| {
+    // Library size only exists on the count-matrix path.
+    let tstats = tangent.as_ref().zip(spectral).map(|(t, s)| {
         let k = t.shared_dims();
         let depth: Vec<f64> = cloud
             .rows
             .iter()
-            .map(|&r| counts.totals[r].max(1.0).ln())
+            .map(|&r| s.counts.totals[r].max(1.0).ln())
             .collect();
         let proj = |c: usize| -> Vec<f64> {
             (0..cloud.len())
@@ -362,20 +410,30 @@ fn main() -> Result<()> {
 
     match args.format {
         Format::Txt => {
-            println!(
-                "{}  {}x{} of {}x{}  q={:.4}  density={:.1}%  embed={}D  sigma2={:.4}  bulk-KS={:.4}",
-                jstr(&args.path),
-                spec.n,
-                spec.p,
-                counts.source_shape.0,
-                counts.source_shape.1,
-                spec.q,
-                100.0 * counts.nnz as f64 / (spec.n * spec.p) as f64,
-                embed_k,
-                spec.sigma_sq,
-                spec.bulk_ks
-            );
-            if spec.bulk_ks > KS_GOOD {
+            match spectral {
+                Some(Spectral { counts, spec }) => println!(
+                    "{}  {}x{} of {}x{}  q={:.4}  density={:.1}%  embed={}D  sigma2={:.4}  bulk-KS={:.4}",
+                    jstr(&args.path),
+                    spec.n,
+                    spec.p,
+                    counts.source_shape.0,
+                    counts.source_shape.1,
+                    spec.q,
+                    100.0 * counts.nnz as f64 / (spec.n * spec.p) as f64,
+                    embed_k,
+                    spec.sigma_sq,
+                    spec.bulk_ks
+                ),
+                None => println!(
+                    "{}  {}x{} precomputed embedding  embed={}D  (no counts: tracy-widom and \
+                     mp-edge not computed)",
+                    jstr(&args.path),
+                    embed.nrows(),
+                    embed_k,
+                    embed_k
+                ),
+            }
+            if let Some(spec) = spectral.map(|s| &s.spec).filter(|s| s.bulk_ks > KS_GOOD) {
                 println!(
                     "WARNING: bulk-KS {:.3} > {KS_GOOD}: the noise bulk does not follow \
                      Marchenko-Pastur, so tracy-widom and mp-edge below are not valid \
@@ -464,7 +522,8 @@ fn main() -> Result<()> {
                         1.0 / (tangent::NULL_DRAWS + 1) as f64
                     );
 
-                    let (k, dir_r, pc_r, axis, cont) = tstats.as_ref().expect("tangent");
+                    // Library-size rows: count-matrix path only.
+                    if let Some((k, dir_r, pc_r, axis, cont)) = tstats.as_ref() {
                     let k = *k;
                     let f2 = |v: &f64| format!("{v:.2}");
                     println!(
@@ -500,6 +559,7 @@ fn main() -> Result<()> {
                              region. Read directions 2+ for programs, and note that cell \
                              cycle is also shared and IS biology."
                         );
+                    }
                     }
                 }
             }
@@ -545,23 +605,28 @@ fn main() -> Result<()> {
                     )
                 })
                 .collect();
-            let head = spec.eigenvalues.iter().take(50);
+            // Spectral fields are null on the embedding path: there is no count
+            // matrix behind them.
+            let sp = |f: &dyn Fn(&Spectral) -> String| spectral.map_or("null".to_string(), f);
+            let head = spectral.map_or(String::new(), |s| {
+                s.spec.eigenvalues.iter().take(50).map(|e| num(*e, 6)).collect::<Vec<_>>().join(",")
+            });
             println!(
                 r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"scale_analysis":[{}],"local_pca":[{}],"cloud_rows":[{}],"cloud_totals":[{}],"cloud_scores":[{}],"shared_scores":[{}],"tangent_overlap":[{}],"tangent_spectrum":[{}],"tangent_null":[{}],"tangent_shared_dims":{},"tangent_depth_r":[{}],"tangent_pc_depth_r":[{}],"tangent_depth_axis":[{}],"tangent_contamination":[{}]}}"#,
                 jstr(&args.path),
-                spec.n,
-                spec.p,
-                counts.source_shape.0,
-                counts.source_shape.1,
-                num(spec.q, 8),
-                counts.nnz,
+                embed.nrows(),
+                sp(&|s| s.spec.p.to_string()),
+                sp(&|s| s.counts.source_shape.0.to_string()),
+                sp(&|s| s.counts.source_shape.1.to_string()),
+                sp(&|s| num(s.spec.q, 8)),
+                sp(&|s| s.counts.nnz.to_string()),
                 embed_k,
-                num(spec.sigma_sq, 8),
-                num(spec.bulk_ks, 8),
-                spec.biwhitening_converged,
-                num(spec.biwhitening_residual, 8),
+                sp(&|s| num(s.spec.sigma_sq, 8)),
+                sp(&|s| num(s.spec.bulk_ks, 8)),
+                sp(&|s| s.spec.biwhitening_converged.to_string()),
+                sp(&|s| num(s.spec.biwhitening_residual, 8)),
                 ranks.join(","),
-                head.map(|e| num(*e, 6)).collect::<Vec<_>>().join(","),
+                head,
                 lap.iter().take(40).map(|e| num(*e, 8)).collect::<Vec<_>>().join(","),
                 kappa.iter().map(|k| num(*k, 6)).collect::<Vec<_>>().join(","),
                                 scale
@@ -589,20 +654,23 @@ fn main() -> Result<()> {
                     ))
                     .collect::<Vec<_>>()
                     .join(","),
+                // Row index in the source file; for an embedding, its TSV row.
                 cloud
                     .rows
                     .iter()
-                    .map(|&i| counts.source_rows[i].to_string())
+                    .map(|&i| spectral.map_or(i, |s| s.counts.source_rows[i]).to_string())
                     .collect::<Vec<_>>()
                     .join(","),
                 // The one covariate scdim computes for itself, emitted so a join
                 // does not have to re-read the matrix to get it back.
-                cloud
-                    .rows
-                    .iter()
-                    .map(|&i| num(counts.totals[i], 1))
-                    .collect::<Vec<_>>()
-                    .join(","),
+                spectral.map_or(String::new(), |s| {
+                    cloud
+                        .rows
+                        .iter()
+                        .map(|&i| num(s.counts.totals[i], 1))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                }),
                 // Leading PC scores per cloud cell, so an external join against
                 // obs can ask which components a covariate lives in. Only under
                 // --tangent: it is the analysis that wants them, and it is a

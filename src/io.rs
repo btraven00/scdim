@@ -129,6 +129,74 @@ pub fn load(path: &str, n_genes: usize, max_cells: usize, log: bool) -> Result<C
     })
 }
 
+/// A precomputed embedding: cells x components, plus the cell ids in file order.
+#[derive(Debug)]
+pub struct Embedding {
+    pub x: Mat<f64>,
+    pub ids: Vec<String>,
+}
+
+/// Read a cells x components TSV -- a header row, then one row per cell: an id
+/// followed by one value per component. The omnibenchmark `embedding_tsv`
+/// layout (`cell_id  PC1  PC2 ...`), i.e. what any embedding module writes.
+/// ponytail: TSV only, the format the benchmark stages actually exchange; add
+/// npy/h5 when an embedding arrives in one.
+pub fn load_embedding(path: &str) -> Result<Embedding> {
+    parse_embedding(&std::fs::read_to_string(path)?, path)
+}
+
+fn parse_embedding(text: &str, path: &str) -> Result<Embedding> {
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let header = lines.next().ok_or_else(|| anyhow::anyhow!("{path}: empty file"))?;
+    let d = header.split('\t').count().saturating_sub(1);
+    if d < 2 {
+        bail!("{path}: header has {d} component column(s); an embedding needs at least 2");
+    }
+    let (mut ids, mut vals) = (Vec::new(), Vec::new());
+    for (i, line) in lines.enumerate() {
+        let mut f = line.split('\t');
+        ids.push(f.next().unwrap_or_default().to_string());
+        let row: Vec<f64> = f
+            .map(|v| v.trim().parse::<f64>())
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| anyhow::anyhow!("{path} line {}: {e}", i + 2))?;
+        if row.len() != d {
+            bail!("{path} line {}: {} values, header has {d} components", i + 2, row.len());
+        }
+        if let Some(v) = row.iter().find(|v| !v.is_finite()) {
+            bail!("{path} line {}: non-finite value {v}", i + 2);
+        }
+        vals.extend(row);
+    }
+    if ids.len() < 3 {
+        bail!("{path}: {} cells; the geometry needs at least 3", ids.len());
+    }
+    let x = Mat::from_fn(ids.len(), d, |i, j| vals[i * d + j]);
+    Ok(Embedding { x, ids })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_benchmark_embedding_tsv() {
+        let e = parse_embedding("cell_id\tPC1\tPC2\na\t1\t-2.5\nb\t0\t3e-1\nc\t4\t5\n", "t").unwrap();
+        assert_eq!(e.ids, ["a", "b", "c"]);
+        assert_eq!((e.x.nrows(), e.x.ncols()), (3, 2));
+        assert_eq!(e.x.read(0, 1), -2.5);
+        assert_eq!(e.x.read(1, 1), 0.3);
+    }
+
+    #[test]
+    fn rejects_ragged_and_nonfinite_rows() {
+        let ragged = parse_embedding("id\tPC1\tPC2\na\t1\t2\nb\t1\nc\t1\t2\n", "t");
+        assert!(ragged.unwrap_err().to_string().contains("line 3"));
+        let nan = parse_embedding("id\tPC1\tPC2\na\t1\t2\nb\tNaN\t2\nc\t1\t2\n", "t");
+        assert!(nan.unwrap_err().to_string().contains("non-finite"));
+    }
+}
+
 /// Concatenate the streamed row-chunks into one CSR triple, keeping every
 /// `n_obs / max_cells`-th row.
 ///
