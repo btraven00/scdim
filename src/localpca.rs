@@ -57,7 +57,6 @@
 //! printed next to every level for the same reason: above it the estimator
 //! returns something too small without failing.
 
-use faer::linalg::solvers::SelfAdjointEigendecomposition;
 use faer::{Mat, Side};
 use rayon::prelude::*;
 
@@ -201,12 +200,15 @@ fn normalised_spectrum(c: &Cloud, sup: &[usize]) -> Option<Vec<f64>> {
     let grand = row.iter().sum::<f64>() / n as f64;
     let b = Mat::from_fn(n, n, |i, j| -0.5 * (d2.read(i, j) - row[i] - row[j] + grand));
 
-    let evd = SelfAdjointEigendecomposition::new(b.as_ref(), Side::Lower);
+    // Values only: the full decomposition runs faer's divide-and-conquer, a
+    // rayon::join recursion whose debug-build frames, with outer par_iter jobs
+    // stolen on top, overflowed the 2 MB worker stack. Order is unspecified.
+    let mut lam = b.selfadjoint_eigenvalues(Side::Lower);
+    lam.sort_by(|a, b| b.total_cmp(a));
     // Gram matrices are PSD in exact arithmetic and slightly indefinite in f64.
-    let mut lam: Vec<f64> = (0..n)
-        .map(|i| evd.s().column_vector().read(i).max(0.0))
-        .collect();
-    lam.reverse();
+    for l in &mut lam {
+        *l = l.max(0.0);
+    }
     let t: f64 = lam.iter().sum();
     if !(t > 0.0) {
         return None; // coincident points: nothing to decompose

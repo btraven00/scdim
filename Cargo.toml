@@ -17,3 +17,10 @@ rayon = "1"
 statrs = "0.18"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+
+# Unoptimised faer frames are huge (gemm dispatch alone ~1 MB), and its
+# divide-and-conquer EVD recurses through rayon::join, so debug builds
+# overflowed the 2 MB worker stack. Optimising dependencies keeps scdim
+# debuggable and makes the tests fast.
+[profile.dev.package."*"]
+opt-level = 3

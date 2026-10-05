@@ -399,9 +399,9 @@ pub fn null_spectrum(frames: usize, d: usize, dim: usize) -> Vec<f64> {
                     }
                 }
             }
-            let evd = SelfAdjointEigendecomposition::new(m.as_ref(), Side::Lower);
-            let mut e: Vec<f64> = (0..dim).map(|i| evd.s().column_vector().read(i)).collect();
-            e.reverse();
+            // Values only, as in localpca: no nested divide-and-conquer join.
+            let mut e = m.selfadjoint_eigenvalues(Side::Lower);
+            e.sort_by(|a, b| b.total_cmp(a));
             e
         })
         .collect();
