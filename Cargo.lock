@@ -1890,7 +1890,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rmt-spca"
-version = "0.1.0"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "302ae5ca274ac6a5fa949bc78a0a592c807394032d5d0bc3d5d9190ad836729b"
 dependencies = [
  "faer",
  "rayon",

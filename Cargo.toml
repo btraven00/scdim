@@ -9,7 +9,7 @@ license = "GPL-3.0-only"
 # I/O: streaming h5ad/h5seurat/10x readers.
 scx-core = { path = "../scx/crates/scx-core" }
 # Biwhitening + Marchenko-Pastur theory.
-rmt-spca = { path = "../rmt-spca" }
+rmt-spca = "0.1.2"
 faer = { version = "0.19", features = ["rayon"] }
 futures = "0.3"
 rayon = "1"
