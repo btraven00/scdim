@@ -21,9 +21,25 @@ struct Args {
     /// Tracy-Widom significance level.
     #[arg(long, default_value_t = 0.001)]
     alpha: f64,
-    /// Largest rank the sequential test will report.
-    #[arg(long, default_value_t = 100)]
-    k_max: usize,
+    /// Largest rank the sequential test will report. Default: no cap -- the
+    /// test stops at its first acceptance anyway, and a cap silently turns a
+    /// result into a floor (it did: 100 at 20k cells x 8248 genes).
+    #[arg(long)]
+    k_max: Option<usize>,
+    /// Only the spectral rank (tracy-widom, mp-edge): no eigenvectors, no
+    /// scores, no geometry. The geometry block is a fixed ~25 s at 2000 cells
+    /// and the eigenvectors double the EVD; neither feeds the rank.
+    #[arg(long)]
+    rank_only: bool,
+    /// Covariance implementation (Sinkhorn is always CSR). `auto` takes the
+    /// sparse covariance at density <= 8% and the dense gemm above;
+    /// top-variance genes are usually dense, where the sparse one loses 4-8x.
+    #[arg(long, value_enum, default_value_t = PathArg::Auto)]
+    spectrum: PathArg,
+    /// Worker threads for rayon and the faer EVD (default: all cores, or
+    /// RAYON_NUM_THREADS). Set it to the cores a scheduler gives the job.
+    #[arg(long)]
+    threads: Option<usize>,
     /// Log-normalise before biwhitening. Off by default: biwhitening is
     /// derived for counts.
     #[arg(long)]
@@ -103,6 +119,13 @@ impl From<MetricArg> for ricci::Metric {
             MetricArg::Euclidean => ricci::Metric::Euclidean,
         }
     }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum PathArg {
+    Auto,
+    Dense,
+    Sparse,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -225,8 +248,34 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
     }
 }
 
+/// The estimates array of the JSON output.
+fn estimates_json(estimates: &[rank::Estimate]) -> String {
+    estimates
+        .iter()
+        .map(|e| {
+            let pv: Vec<String> = e
+                .pvalues
+                .iter()
+                .map(|p| if p.is_finite() { format!("{p:.6e}") } else { "null".to_string() })
+                .collect();
+            format!(
+                r#"{{"name":"{}","rank":{},"stat":{},"detail":"{}","pvalues":[{}]}}"#,
+                e.name,
+                e.rank,
+                e.stat.map_or("null".to_string(), |v| num(v, 6)),
+                jstr(&e.detail),
+                pv.join(",")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+    if let Some(t) = args.threads {
+        rayon::ThreadPoolBuilder::new().num_threads(t).build_global()?;
+    }
     let mut pr = Progress::new(!args.quiet);
 
     pr.begin("reading matrix");
@@ -244,16 +293,54 @@ fn main() -> Result<()> {
     );
 
     pr.begin("biwhitening + eigenspectrum");
-    let spec = rank::Spectrum::compute(&counts.x, args.bw_damp, args.bw_max_iter);
+    let scores_k = if args.rank_only { 0 } else { rank::SCORE_K };
+    let path = match args.spectrum {
+        PathArg::Auto => rank::SpectrumPath::auto(&counts.x),
+        PathArg::Dense => rank::SpectrumPath::Dense,
+        PathArg::Sparse => rank::SpectrumPath::Sparse,
+    };
+    let spec = rank::Spectrum::compute(&counts.x, args.bw_damp, args.bw_max_iter, scores_k, path);
     pr.ok(
         "biwhitening + eigenspectrum",
-        &format!("sigma2 {:.3}, bulk-KS {:.3}", spec.sigma_sq, spec.bulk_ks),
+        &format!("sigma2 {:.3}, bulk-KS {:.3}, {:?} path", spec.sigma_sq, spec.bulk_ks, path),
     );
+    pr.stage("  sinkhorn", spec.timings[0], "");
+    pr.stage("  covariance", spec.timings[1], "");
+    pr.stage(if args.rank_only { "  eigenvalues" } else { "  eigen + scores" }, spec.timings[2], "");
     // Geometry runs in the signal subspace, not in ambient gene space: the
     // rank comes from the Tracy-Widom test, so the embedding is chosen by a
     // spectral heuristic rather than by the geometric ones themselves.
     pr.begin("tracy-widom test");
-    let tw = rank::tracy_widom(&spec, args.alpha, args.k_max);
+    let tw = rank::tracy_widom(&spec, args.alpha, args.k_max.unwrap_or(usize::MAX));
+    if tw.detail.starts_with("hit k_max") {
+        eprintln!("WARNING: tracy-widom {}", tw.detail);
+    }
+    if args.rank_only {
+        pr.ok("tracy-widom test", &format!("rank {}", tw.rank));
+        pr.finish();
+        let estimates = [tw, rank::mp_edge(&spec)];
+        match args.format {
+            Format::Txt => {
+                println!(
+                    "{}  {}x{} of {}x{}  q={:.4}  sigma2={:.4}  bulk-KS={:.4}  (rank only)",
+                    jstr(&args.path), spec.n, spec.p, counts.source_shape.0, counts.source_shape.1,
+                    spec.q, spec.sigma_sq, spec.bulk_ks
+                );
+                for e in &estimates {
+                    println!("{:<14} {:>4} {:>8}   {}", e.name, e.rank, "", e.detail);
+                }
+            }
+            Format::Json => println!(
+                r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":0,"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"rank_only":true,"estimates":[{}],"eigenvalues":[{}]}}"#,
+                jstr(&args.path), spec.n, spec.p, counts.source_shape.0, counts.source_shape.1,
+                num(spec.q, 8), counts.nnz, num(spec.sigma_sq, 8), num(spec.bulk_ks, 8),
+                spec.biwhitening_converged, num(spec.biwhitening_residual, 8),
+                estimates_json(&estimates),
+                spec.eigenvalues.iter().take(50).map(|e| num(*e, 6)).collect::<Vec<_>>().join(",")
+            ),
+        }
+        return Ok(());
+    }
     let embed_k = tw.rank.clamp(2, spec.scores.ncols());
     let embed = spec.scores.as_ref().subcols(0, embed_k).to_owned();
     pr.ok("tracy-widom test", &format!("rank {}, embedding {embed_k}D", tw.rank));
@@ -521,30 +608,7 @@ fn main() -> Result<()> {
             }
         }
         Format::Json => {
-            let ranks: Vec<String> = estimates
-                .iter()
-                .map(|e| {
-                    let pv: Vec<String> = e
-                        .pvalues
-                        .iter()
-                        .map(|p| {
-                            if p.is_finite() {
-                                format!("{p:.6e}")
-                            } else {
-                                "null".to_string()
-                            }
-                        })
-                        .collect();
-                    format!(
-                        r#"{{"name":"{}","rank":{},"stat":{},"detail":"{}","pvalues":[{}]}}"#,
-                        e.name,
-                        e.rank,
-                        e.stat.map_or("null".to_string(), |v| num(v, 6)),
-                        jstr(&e.detail),
-                        pv.join(",")
-                    )
-                })
-                .collect();
+            let ranks = estimates_json(&estimates);
             let head = spec.eigenvalues.iter().take(50);
             println!(
                 r#"{{"path":"{}","n_cells":{},"n_genes":{},"source_shape":[{},{}],"q":{},"nnz":{},"embed_dim":{},"sigma_sq":{},"bulk_ks":{},"biwhitening_converged":{},"biwhitening_residual":{},"estimates":[{}],"eigenvalues":[{}],"laplacian_eigenvalues":[{}],"node_curvature":[{}],"scale_analysis":[{}],"local_pca":[{}],"cloud_rows":[{}],"cloud_totals":[{}],"cloud_scores":[{}],"shared_scores":[{}],"tangent_overlap":[{}],"tangent_spectrum":[{}],"tangent_null":[{}],"tangent_shared_dims":{},"tangent_depth_r":[{}],"tangent_pc_depth_r":[{}],"tangent_depth_axis":[{}],"tangent_contamination":[{}]}}"#,
@@ -560,7 +624,7 @@ fn main() -> Result<()> {
                 num(spec.bulk_ks, 8),
                 spec.biwhitening_converged,
                 num(spec.biwhitening_residual, 8),
-                ranks.join(","),
+                ranks,
                 head.map(|e| num(*e, 6)).collect::<Vec<_>>().join(","),
                 lap.iter().take(40).map(|e| num(*e, 8)).collect::<Vec<_>>().join(","),
                 kappa.iter().map(|k| num(*k, 6)).collect::<Vec<_>>().join(","),

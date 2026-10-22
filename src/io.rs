@@ -1,19 +1,20 @@
 //! Loading: stream a count matrix through `scx-core`, keep the top-variance
-//! genes, hand back a dense cells x genes matrix.
+//! genes, hand back a sparse (CSR) cells x genes matrix.
 //!
-//! Dense is the point: every rank heuristic here needs a full eigenspectrum,
-//! so the matrix has to be small enough for an O(g^3) EVD anyway. Gene
-//! selection is what makes that true, not an optimisation.
+//! Every rank heuristic here needs a full eigenspectrum, so the gene count is
+//! bounded by the O(g^3) EVD anyway. The cells are not: keeping CSR means the
+//! n x g matrix, its square for Sinkhorn and the whitened copy are never
+//! materialised -- only the g x g covariance is dense.
 
-use anyhow::{bail, Result};
-use faer::Mat;
+use anyhow::{anyhow, bail, Result};
 use futures::StreamExt;
+use rmt_spca::sparse::CsrMatrix;
 use scx_core::{open, OpenOptions};
 
 /// A loaded, gene-selected count matrix.
 pub struct Counts {
     /// cells x genes, raw counts (or log-normalised, see [`load`]).
-    pub x: Mat<f64>,
+    pub x: CsrMatrix,
     /// Column index of each kept gene in the source file.
     pub genes: Vec<usize>,
     /// Shape of the source matrix, before filtering.
@@ -91,16 +92,15 @@ pub fn load(path: &str, n_genes: usize, max_cells: usize, log: bool) -> Result<C
     }
     ranked.sort_unstable();
 
-    // Dense fill. `pos[j]` maps a source gene column to its output column.
+    // CSR fill. `pos[j]` maps a source gene column to its output column.
     let mut pos = vec![usize::MAX; p];
     for (out, &j) in ranked.iter().enumerate() {
         pos[j] = out;
     }
-    let mut x = Mat::<f64>::zeros(nz_cells, ranked.len());
     let mut kept_totals = Vec::with_capacity(nz_cells);
     let mut kept_rows = Vec::with_capacity(nz_cells);
-    let mut nnz = 0usize;
-    let mut row = 0usize;
+    let (mut optr, mut oidx, mut oval) = (vec![0usize], Vec::new(), Vec::new());
+    let mut row_buf: Vec<(usize, f64)> = Vec::new();
     for i in 0..n {
         if totals[i] <= 0.0 {
             continue;
@@ -108,16 +108,25 @@ pub fn load(path: &str, n_genes: usize, max_cells: usize, log: bool) -> Result<C
         kept_totals.push(totals[i]);
         kept_rows.push(src[i]);
         let scale = 1e4 / totals[i];
+        row_buf.clear();
         for k in indptr[i]..indptr[i + 1] {
             let out = pos[indices[k] as usize];
             if out != usize::MAX {
                 let v = if log { (data[k] * scale).ln_1p() } else { data[k] };
-                x.write(row, out, v);
-                nnz += 1;
+                row_buf.push((out, v));
             }
         }
-        row += 1;
+        // Source rows are not guaranteed sorted (rmt-spca BUGS.md, unsorted-CSR
+        // h5ad); CsrMatrix requires strictly increasing columns.
+        row_buf.sort_unstable_by_key(|&(j, _)| j);
+        for &(j, v) in &row_buf {
+            oidx.push(j);
+            oval.push(v);
+        }
+        optr.push(oidx.len());
     }
+    let nnz = oidx.len();
+    let x = CsrMatrix::new(nz_cells, ranked.len(), optr, oidx, oval).map_err(|e| anyhow!(e))?;
 
     Ok(Counts {
         x,
